@@ -2,11 +2,17 @@
  * OVP reference provider (Cloudflare). One Worker, one KV namespace.
  *
  * Same contract as ovp-provider-aws/src/app.py -- same routes, same
- * write-capability-token model, same storage key shape (conceptually:
- * DynamoDB's pk/sk maps onto a single KV key `PASSPORT#<id>#<sk>`, and
- * KV's list({prefix}) returns keys in sorted order for free, same as a
- * DynamoDB Query). Two independently-built providers speaking the same
- * protocol -- that's the point.
+ * storage key shape (conceptually: DynamoDB's pk/sk maps onto a single
+ * KV key `PASSPORT#<id>#<sk>`, and KV's list({prefix}) returns keys in
+ * sorted order for free, same as a DynamoDB Query). Two independently-
+ * built providers speaking the same protocol -- that's the point.
+ *
+ * POC MODE: there is currently no write access control at all -- anyone
+ * who knows a passport id (as guessable as the QR code, i.e. not
+ * guessable: a UUIDv7 with 62 random bits) can both read and append to
+ * it. This was a deliberate simplification for easier POCing (a
+ * writeToken model existed and was removed, not just left unenforced --
+ * see git history if it needs to come back).
  */
 import * as ovpf from "./ovpf-core.js";
 
@@ -15,18 +21,6 @@ function json(body, status = 200) {
     status,
     headers: { "content-type": "application/json" },
   });
-}
-
-async function tokenHash(token) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
-  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
-function randomToken() {
-  // 32 random bytes, base64url -- same shape as ovp-provider-aws's
-  // secrets.token_urlsafe(32).
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function metaKey(id) {
@@ -75,28 +69,19 @@ async function createPassport(request, env) {
     return json({ error: "passport already registered with this provider" }, 409);
   }
 
-  const writeToken = randomToken();
   await env.PASSPORTS.put(metaKey(id), JSON.stringify({
-    writeTokenHash: await tokenHash(writeToken),
     createdAt: new Date().toISOString(),
   }));
 
-  return json({
-    id, writeToken, readUrl: `/v1/passports/${id}`,
-    note: "Store writeToken locally. It is never recoverable from the " +
-          "server and is not printed on the passport's QR code.",
-  }, 201);
+  return json({ id, readUrl: `/v1/passports/${id}` }, 201);
 }
 
 async function appendEvent(request, env, id) {
   const meta = await getMeta(env, id);
   if (!meta) return json({ error: "no such passport" }, 404);
 
-  // POC MODE: write-token possession is NOT enforced right now, matching
-  // ovp-provider-aws's app.py -- anyone who can reach this passport id can
-  // append to it. The token is still minted at creation so re-enabling
-  // enforcement later is a few lines here, not an API reshape. See
-  // README's Auth section.
+  // POC MODE: no write access control at all right now -- see module
+  // docstring. Anyone who can reach this passport id can append to it.
 
   let ev;
   try {
