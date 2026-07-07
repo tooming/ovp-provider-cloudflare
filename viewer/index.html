@@ -115,8 +115,12 @@ const WORKSHOP_SESSION_KEY = "ovp_workshop_session";
 function getWorkshopSession() {
   try { return JSON.parse(localStorage.getItem(WORKSHOP_SESSION_KEY)); } catch { return null; }
 }
-function setWorkshopSession(domain, secret) {
-  localStorage.setItem(WORKSHOP_SESSION_KEY, JSON.stringify({ domain, secret }));
+function setWorkshopSession(domain, secret, extra) {
+  // extra caches {role, name, mechanicId} once /whoami has resolved it, so
+  // pages that don't need to re-confirm the role (e.g. the passport log
+  // form's hint) don't have to make an extra round trip just to word it
+  // right -- the workshop status page still always reconfirms live.
+  localStorage.setItem(WORKSHOP_SESSION_KEY, JSON.stringify({ domain, secret, ...(extra || {}) }));
 }
 function clearWorkshopSession() {
   localStorage.removeItem(WORKSHOP_SESSION_KEY);
@@ -226,8 +230,27 @@ function renderHome(app) {
     <p id="create-status" class="error"></p>
     <p>A fresh passport has no vehicle data yet -- the id itself is the
     identity; VIN and everything else gets added later as events (from
-    OpenDiag, a verified workshop, or any other producer).</p>`;
+    OpenDiag, a verified workshop, or any other producer).</p>
+
+    <h2>Open an existing passport</h2>
+    <p>Lost the sticker or the link? Paste the passport id, or the full URL --
+    either works.</p>
+    <div class="row">
+      <input id="open-id" placeholder="passport id, or https://.../p/<uuid>">
+      <button id="open-btn">Open</button>
+    </div>
+    <p id="open-status" class="error"></p>`;
   document.getElementById("create-btn").onclick = createPassport;
+  document.getElementById("open-btn").onclick = () => {
+    const status = document.getElementById("open-status");
+    const raw = document.getElementById("open-id").value.trim();
+    const m = raw.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+    if (!m) { status.textContent = "That doesn't look like a passport id or link."; return; }
+    location.href = `/p/${m[0]}`;
+  };
+  document.getElementById("open-id").onkeydown = (e) => {
+    if (e.key === "Enter") document.getElementById("open-btn").click();
+  };
 }
 
 async function renderPassport(app, id) {
@@ -355,6 +378,10 @@ async function renderPassport(app, id) {
     </div>
 
     <h2>Timeline</h2>
+    <p class="no-print">
+      <button id="verify-integrity-btn">Verify history integrity</button>
+      <span id="verify-integrity-result" class="qr-caption"></span>
+    </p>
     ${timeline}
     <p class="no-print"><a class="export" href="/v1/passports/${id}/export">Export raw NDJSON</a></p>
   `;
@@ -369,6 +396,8 @@ async function renderPassport(app, id) {
   document.getElementById("print-btn").onclick = () => window.print();
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
   document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
+  document.getElementById("verify-integrity-btn").onclick = () => verifyIntegrity(
+    id, document.getElementById("verify-integrity-btn"), document.getElementById("verify-integrity-result"));
 
   const syncNowBtn = document.getElementById("sync-now-btn");
   if (syncNowBtn) syncNowBtn.onclick = () => {
@@ -388,18 +417,98 @@ async function renderPassport(app, id) {
     };
   });
 
-  // If this browser is signed in as a workshop, default the domain field
-  // to it -- one less thing to type every time you log real work.
+  // If this browser is signed in as a workshop (or a specific mechanic at
+  // one), default the domain field to it -- one less thing to type every
+  // time you log real work. Role/name are read from the cached session
+  // (set by the workshop status page's /whoami check), not re-fetched
+  // here, so opening a passport doesn't cost an extra round trip.
   const session = getWorkshopSession();
   if (session) {
     document.getElementById("log-domain").value = session.domain;
-    document.getElementById("log-session-hint").textContent =
-      `Signed in as ${session.domain} in this browser -- events logged with this domain will be verified automatically.`;
+    document.getElementById("log-session-hint").textContent = session.role === "mechanic"
+      ? `Signed in as mechanic ${session.name || ""} at ${session.domain} in this browser -- events logged with this domain will be verified and attributed to you automatically.`
+      : `Signed in as ${session.domain} in this browser -- events logged with this domain will be verified automatically.`;
   }
 
   // A page load is also a sync opportunity -- e.g. events queued last time
   // this browser was offline, on a passport reopened after reconnecting.
   if (!offlineLoad && pendingCount) flushOutbox(id);
+}
+
+// --- Client-side hash-chain verification -----------------------------------
+// A vendored port of ovp-provider-cloudflare/src/ovpf-core.js's
+// canonicalize/eventHash/verifyChain -- deliberately re-implemented here
+// rather than trusted from whichever server rendered this page, so an
+// enthusiast (or anyone) can confirm the exported log's hash chain is
+// actually intact using only their own browser, the same conformance-
+// tested algorithm, computed independently a third time (Python, the
+// Cloudflare Worker, and now here).
+function ovpfCanonJSON(obj) {
+  if (obj === null || obj === undefined) return "null";
+  if (typeof obj === "boolean") return obj ? "true" : "false";
+  if (typeof obj === "number") {
+    if (!Number.isFinite(obj)) throw new Error(`${obj} has no canonical JSON representation`);
+    return String(obj);
+  }
+  if (typeof obj === "string") return JSON.stringify(obj);
+  if (Array.isArray(obj)) return "[" + obj.map(ovpfCanonJSON).join(",") + "]";
+  if (typeof obj === "object") {
+    const keys = Object.keys(obj).sort();
+    return "{" + keys.map(k => JSON.stringify(k) + ":" + ovpfCanonJSON(obj[k])).join(",") + "}";
+  }
+  throw new Error(`${typeof obj} has no canonical JSON representation`);
+}
+
+async function ovpfEventHash(event) {
+  const { hash, ...body } = event;
+  const bytes = new TextEncoder().encode(ovpfCanonJSON(body));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return "sha256:" + [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function ovpfVerifyChain(events) {
+  const problems = [];
+  let prev = null;
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    const eid = ev.id || `#${i}`;
+    if (!ev.hash) { problems.push(`${eid}: no hash (log not sealed)`); prev = null; continue; }
+    if ((await ovpfEventHash(ev)) !== ev.hash) problems.push(`${eid}: hash mismatch (event altered)`);
+    if (i === 0) {
+      if (ev.prevHash) problems.push(`${eid}: genesis must not carry prevHash`);
+    } else if (ev.prevHash !== prev) {
+      problems.push(`${eid}: broken link (prevHash != previous hash)`);
+    }
+    prev = ev.hash;
+  }
+  return problems;
+}
+
+async function verifyIntegrity(id, btn, resultEl) {
+  btn.disabled = true;
+  resultEl.className = "qr-caption";
+  resultEl.textContent = "Fetching the raw log and checking it in this browser…";
+  try {
+    const resp = await fetch(`/v1/passports/${id}/export`);
+    if (!resp.ok) throw new Error(`export failed: HTTP ${resp.status}`);
+    const text = await resp.text();
+    const events = text.split("\n").filter(Boolean).map(l => JSON.parse(l));
+    const problems = await ovpfVerifyChain(events);
+    if (!events.length) {
+      resultEl.textContent = "No events yet -- nothing to verify.";
+    } else if (!problems.length) {
+      resultEl.textContent = `✓ All ${events.length} event(s) verified -- hash chain intact. ` +
+        `Computed independently in this browser from the raw export, not trusted from the server's own reading of it.`;
+    } else {
+      resultEl.className = "error";
+      resultEl.textContent = `⚠ ${problems.length} problem(s) found: ${problems.join("; ")}`;
+    }
+  } catch (e) {
+    resultEl.className = "error";
+    resultEl.textContent = `Could not verify: ${e.message}`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function envelope(vehicleId, type, data, producer) {
@@ -492,7 +601,7 @@ function renderWorkshopForm(app) {
     if (r.body.workshopSecret) {
       // Freshly minted -- show it once, here, now. The API never returns
       // it again after this response.
-      setWorkshopSession(r.body.domain, r.body.workshopSecret);
+      setWorkshopSession(r.body.domain, r.body.workshopSecret, { role: "workshop", name: r.body.name });
       renderWorkshopSecretReveal(app, r.body);
     } else {
       location.href = `/workshop/${encodeURIComponent(r.body.domain)}`;
@@ -526,6 +635,25 @@ function renderWorkshopSecretReveal(app, view) {
     { location.href = `/workshop/${encodeURIComponent(view.domain)}`; };
 }
 
+function renderMechanicSecretReveal(app, domain, mechanicName, mechanicSecret) {
+  app.innerHTML = `
+    <h1>${esc(mechanicName)} added</h1>
+    <p><strong>Save this secret now and hand it to them -- it will not be
+    shown again.</strong> It lets them sign in (the exact same sign-in box
+    as the workshop secret) and log events attributed to themself, without
+    ever holding the master secret that can add/remove mechanics or reset
+    it. Lost? Remove and re-add them for a fresh one.</p>
+    <div class="row">
+      <input id="mech-secret-field" value="${esc(mechanicSecret)}" readonly style="flex:1">
+      <button id="mech-secret-copy">Copy</button>
+    </div>
+    <button id="mech-continue-btn">Back to workshop</button>
+  `;
+  document.getElementById("mech-secret-copy").onclick = () =>
+    copyToClipboard(mechanicSecret, document.getElementById("mech-secret-copy"));
+  document.getElementById("mech-continue-btn").onclick = () => renderWorkshopStatus(app, domain);
+}
+
 async function renderWorkshopStatus(app, domain) {
   app.innerHTML = "Loading…";
   const r = await api(`/v1/workshops/${encodeURIComponent(domain)}`);
@@ -536,41 +664,84 @@ async function renderWorkshopStatus(app, domain) {
   }
   if (!r.ok) { app.innerHTML = `<p class="error">HTTP ${r.status}</p>`; return; }
   const w = r.body;
-  const session = getWorkshopSession();
-  const signedIn = session && session.domain === w.domain;
+
+  // A cached role (from a previous /whoami) isn't trusted for the actual
+  // gating below -- it's reconfirmed live every time this page loads,
+  // since this is exactly the page that decides which controls (owner
+  // admin vs. a mechanic's own attribution) get shown. A stale or revoked
+  // secret gets signed out here, with a reason, rather than silently
+  // rendering a broken state.
+  let session = getWorkshopSession();
+  let who = null;
+  let staleNote = "";
+  if (session && session.domain === w.domain) {
+    const whoR = await api(`/v1/workshops/${encodeURIComponent(domain)}/whoami`,
+      { headers: { authorization: `Bearer ${session.secret}` } });
+    if (whoR.ok) {
+      who = whoR.body;
+      setWorkshopSession(w.domain, session.secret, { role: who.role, name: who.name, mechanicId: who.mechanicId });
+      session = getWorkshopSession();
+    } else {
+      clearWorkshopSession();
+      session = null;
+      staleNote = "This browser's saved sign-in no longer works (the secret " +
+        "may have been reset or removed) -- signed out. ";
+    }
+  }
+  const isOwner = !!who && who.role === "workshop";
+  const isMechanic = !!who && who.role === "mechanic";
 
   const verifiedBlock = w.verified
     ? `<p><span class="badge-verified">✓ Verified</span> since ${fmtTime(w.verifiedAt)}.
        Events logged with <code>producer.domain: "${esc(w.domain)}"</code> and
-       the right secret get stamped <code>verified: true</code> automatically.</p>`
+       a secret this workshop recognizes get stamped <code>verified: true</code>
+       automatically (and attributed by name, if it's a specific mechanic's secret).</p>`
     : `<p>Not verified yet. Add this DNS record, then check again --
        propagation can take a few minutes:</p>
        <code class="dns">Type:  TXT
 Name:  ${esc(w.dnsRecord.name)}
 Value: ${esc(w.dnsRecord.value)}</code>
        <button id="ws-verify-btn">Check now</button>
-       <p id="ws-verify-status" class="error"></p>`;
+       <p id="ws-verify-status" class="error"></p>
+       <p class="qr-caption">Anyone who can add a DNS record for this domain can run
+       this check -- there's no separate "verifier" role or approval queue,
+       same as ACME/Let's Encrypt.</p>`;
 
-  const signInBlock = signedIn
-    ? `<p>This browser is signed in as <strong>${esc(w.domain)}</strong>.
-       <button id="ws-signout-btn">Sign out</button></p>`
-    : `<h2>Sign in as this workshop</h2>
-       <p>Paste the secret you were given at registration to log verified
-       events and manage mechanics from this browser. Knowing the domain
-       is verified isn't enough on its own -- only the secret proves you're
-       the one who registered it.</p>
-       <div class="row">
-         <input id="ws-secret-input" type="password" placeholder="workshop secret" style="flex:1">
-         <button id="ws-signin-btn">Sign in</button>
-       </div>
-       <p id="ws-signin-status" class="error"></p>
-       <p>Lost it? <a href="#" id="ws-reset-link">Reset the secret</a>
-       (needs the DNS record to still be in place).</p>`;
+  let identityBlock;
+  if (isOwner) {
+    identityBlock = `<p>${esc(staleNote)}This browser is signed in as the
+      <strong>workshop owner</strong> for ${esc(w.domain)}.
+      <button id="ws-signout-btn">Sign out</button></p>`;
+  } else if (isMechanic) {
+    identityBlock = `<p>${esc(staleNote)}This browser is signed in as mechanic
+      <strong>${esc(who.name)}</strong> at ${esc(w.domain)}. Events logged from
+      here will be attributed to you by name automatically.
+      <button id="ws-signout-btn">Sign out</button></p>`;
+  } else {
+    identityBlock = `<h2>Sign in</h2>
+      <p>${esc(staleNote)}Paste a secret to sign in -- the workshop's own secret
+      (full admin: manage mechanics, reset the secret) or a specific mechanic's
+      own secret (log events attributed to yourself, nothing else). The same
+      box works for both; whichever it matches decides your role.</p>
+      <div class="row">
+        <input id="ws-secret-input" type="password" placeholder="secret" style="flex:1">
+        <button id="ws-signin-btn">Sign in</button>
+      </div>
+      <p id="ws-signin-status" class="error"></p>`;
+  }
 
-  const mechanicsBlock = signedIn ? `
+  // Reset always mints a new *master* secret via a live DNS check -- not
+  // gated on being signed in at all (DNS control is the only credential it
+  // actually checks), so it's offered regardless of role.
+  const resetBlock = `<p class="qr-caption">Lost the workshop's own secret, or
+    need to invalidate it? <a href="#" id="ws-reset-link">Reset it</a>
+    (needs this domain's DNS TXT record to still be in place).</p>`;
+
+  const mechanicsBlock = isOwner ? `
     <h2>Mechanics</h2>
-    <p>Attribute logged work to a specific person. Removing someone doesn't
-    touch any event they already produced.</p>
+    <p>Give a mechanic their own secret so work is attributed to the person
+    who actually did it, without sharing the workshop's master secret.
+    Removing someone doesn't touch any event they already produced.</p>
     <ul>${(w.mechanics || []).map(m =>
       `<li>${esc(m.name)} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">Remove</button></li>`
     ).join("") || "<li>none yet</li>"}</ul>
@@ -587,7 +758,8 @@ Value: ${esc(w.dnsRecord.value)}</code>
       <div class="field">Status</div><div>${w.verified ? "✓ Verified" : "Pending verification"}</div>
     </div>
     ${verifiedBlock}
-    ${signInBlock}
+    ${identityBlock}
+    ${resetBlock}
     ${mechanicsBlock}
     <p><a href="/workshop">Register another domain</a></p>
   `;
@@ -610,9 +782,9 @@ Value: ${esc(w.dnsRecord.value)}</code>
   if (signinBtn) signinBtn.onclick = () => {
     const status = document.getElementById("ws-signin-status");
     const secret = document.getElementById("ws-secret-input").value.trim();
-    if (!secret) { status.textContent = "Paste your workshop secret first."; return; }
-    // Not validated here -- a wrong secret just fails clearly on first
-    // real use (adding a mechanic, logging a verified event).
+    if (!secret) { status.textContent = "Paste a secret first."; return; }
+    // Not validated here -- renderWorkshopStatus's own /whoami call on the
+    // next render is what confirms it (or signs back out with a reason).
     setWorkshopSession(w.domain, secret);
     renderWorkshopStatus(app, domain);
   };
@@ -623,10 +795,10 @@ Value: ${esc(w.dnsRecord.value)}</code>
   const resetLink = document.getElementById("ws-reset-link");
   if (resetLink) resetLink.onclick = async (e) => {
     e.preventDefault();
-    if (!confirm("Reset the secret? This needs the DNS TXT record to still be in place, and invalidates the old secret immediately.")) return;
+    if (!confirm("Reset the workshop's own secret? This needs the DNS TXT record to still be in place, and invalidates the old one immediately (mechanic secrets are unaffected).")) return;
     const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/secret/reset`, { method: "POST" });
     if (!rr.ok) { alert(`Could not reset: ${rr.body?.error || rr.status}`); return; }
-    setWorkshopSession(w.domain, rr.body.workshopSecret);
+    setWorkshopSession(w.domain, rr.body.workshopSecret, { role: "workshop", name: w.name });
     renderWorkshopSecretReveal(app, { ...w, workshopSecret: rr.body.workshopSecret });
   };
 
@@ -641,7 +813,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
       body: JSON.stringify({ name }),
     });
     if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
-    renderWorkshopStatus(app, domain);
+    renderMechanicSecretReveal(app, domain, name, rr.body.mechanicSecret);
   };
 
   document.querySelectorAll(".ws-remove-mech").forEach(btn => {

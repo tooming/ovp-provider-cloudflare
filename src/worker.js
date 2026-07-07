@@ -126,7 +126,7 @@ async function appendWorkshopEvent(env, domain, ev) {
 
 function reduceWorkshop(events) {
   const state = { domain: null, name: null, verified: false, verifiedAt: null,
-                   verificationToken: null, secretHash: null, mechanics: new Map() };
+                   verificationToken: null, secretHash: null, mechanicsRaw: new Map() };
   for (const ev of events) {
     const t = ev.type, d = ev.data || {};
     if (t === "WorkshopRegistered") {
@@ -137,12 +137,15 @@ function reduceWorkshop(events) {
     } else if (t === "WorkshopSecretReset") {
       state.secretHash = d.secretHash;
     } else if (t === "WorkshopMechanicAdded") {
-      state.mechanics.set(d.mechanicId, d.name);
+      state.mechanicsRaw.set(d.mechanicId, { name: d.name, secretHash: d.secretHash });
     } else if (t === "WorkshopMechanicRemoved") {
-      state.mechanics.delete(d.mechanicId);
+      state.mechanicsRaw.delete(d.mechanicId);
     }
   }
-  state.mechanics = [...state.mechanics].map(([mechanicId, name]) => ({ mechanicId, name }));
+  // Sanitized list for anything that goes out over the wire -- secretHash
+  // never leaves this process. mechanicsRaw (with secretHash) stays only
+  // for matchProducerSecret to check against.
+  state.mechanics = [...state.mechanicsRaw].map(([mechanicId, m]) => ({ mechanicId, name: m.name }));
   return state;
 }
 
@@ -182,14 +185,38 @@ async function secretHash(secret) {
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+function bearerToken(request) {
+  const auth = request.headers.get("authorization") || "";
+  return auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
+}
+
 async function checkSecret(state, request) {
   // Bearer <workshopSecret> -- proves this request holds the workshop
   // identity, not just that it knows a verified domain name exists.
   // Without this, anyone could claim producer.domain: "skoor.ee" and get
-  // the checkmark -- found and fixed live, this was a real gap.
-  const auth = request.headers.get("authorization") || "";
-  const token = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
+  // the checkmark -- found and fixed live, this was a real gap. Only the
+  // master secret passes this -- admin actions (add/remove a mechanic,
+  // reset this secret) are deliberately not delegable to a mechanic's own
+  // secret, see matchProducerSecret.
+  const token = bearerToken(request);
   return !!token && state.secretHash === (await secretHash(token));
+}
+
+async function matchProducerSecret(workshop, token) {
+  // Whoever holds a secret this workshop recognizes IS that identity --
+  // there's no separate id to send. Returns {role:"workshop"} for the
+  // master secret, {role:"mechanic", mechanicId} for a specific
+  // mechanic's own secret, or null. Deliberately the *only* thing a
+  // mechanic secret can do (get attributed on a logged event) -- never
+  // checked by checkSecret, so it can't add/remove mechanics or reset
+  // the master secret.
+  if (!token) return null;
+  const tokenHash = await secretHash(token);
+  if (workshop.secretHash === tokenHash) return { role: "workshop" };
+  for (const [mechanicId, mech] of workshop.mechanicsRaw || []) {
+    if (mech.secretHash === tokenHash) return { role: "mechanic", mechanicId };
+  }
+  return null;
 }
 
 async function dnsTxtLookup(name) {
@@ -302,9 +329,30 @@ async function addMechanic(request, env, domain) {
   const name = (body.name || "").trim();
   if (!name) return json({ error: "name required" }, 400);
 
+  const mechanicId = randomToken(6);
+  const mechanicSecret = randomSecret();
   await appendWorkshopEvent(env, domain, newWorkshopEvent(
-    "WorkshopMechanicAdded", { mechanicId: randomToken(6), name }));
-  return json(workshopView(await getWorkshop(env, domain)), 201);
+    "WorkshopMechanicAdded", { mechanicId, name, secretHash: await secretHash(mechanicSecret) }));
+  const view = workshopView(await getWorkshop(env, domain));
+  view.mechanicId = mechanicId;
+  view.mechanicSecret = mechanicSecret;
+  view.note = "Save mechanicSecret now and hand it to the mechanic -- it " +
+    "lets them sign in (same sign-in box as the workshop secret) and log " +
+    "events attributed to themself. Won't be shown again; if lost, " +
+    "remove and re-add them.";
+  return json(view, 201);
+}
+
+async function whoamiWorkshop(request, env, domain) {
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  const match = await matchProducerSecret(state, bearerToken(request));
+  if (!match) return json({ error: "invalid secret" }, 403);
+  if (match.role === "workshop") {
+    return json({ role: "workshop", domain, name: state.name });
+  }
+  const mech = state.mechanicsRaw.get(match.mechanicId);
+  return json({ role: "mechanic", domain, mechanicId: match.mechanicId, name: mech.name });
 }
 
 async function removeMechanic(request, env, domain, mechanicId) {
@@ -338,20 +386,32 @@ async function appendEvent(request, env, id) {
 
   // Server-side provenance stamping (see docs/TRUST.md) -- matches app.py
   // exactly: a client's producer.verified claim is stripped, and only
-  // re-added here if this request also proves it holds that workshop's
-  // secret (see checkSecret). Knowing a domain is verified is not the
-  // same as being its holder -- found and fixed live, this was a real
-  // gap in the first version. Baked into the hash immediately, so a
-  // workshop losing verified status later doesn't retroactively change
-  // what it attested at the time.
+  // re-added here if this request also proves it holds a secret this
+  // workshop recognizes (see matchProducerSecret). Knowing a domain is
+  // verified is not the same as being its holder -- found and fixed
+  // live, this was a real gap in the first version. Baked into the hash
+  // immediately, so a workshop losing verified status later doesn't
+  // retroactively change what it attested at the time. The same secret
+  // slot serves the workshop's own master secret AND any mechanic's
+  // secret -- whichever one matches determines who gets attributed.
   const producer = ev.producer || {};
   delete producer.verified;
   delete producer.verifiedAt;
+  delete producer.mechanicId;
+  delete producer.mechanicName;
   if (producer.domain) {
     const workshop = await getWorkshop(env, producer.domain);
-    if (workshop && workshop.verified && (await checkSecret(workshop, request))) {
-      producer.verified = true;
-      producer.verifiedAt = workshop.verifiedAt;
+    if (workshop && workshop.verified) {
+      const match = await matchProducerSecret(workshop, bearerToken(request));
+      if (match) {
+        producer.verified = true;
+        producer.verifiedAt = workshop.verifiedAt;
+        if (match.role === "mechanic") {
+          const mech = workshop.mechanicsRaw.get(match.mechanicId);
+          producer.mechanicId = match.mechanicId;
+          producer.mechanicName = mech.name;
+        }
+      }
     }
   }
   ev.producer = producer;
@@ -403,6 +463,9 @@ export default {
     if (m && method === "GET") return readPassport(request, env, m[1]);
 
     if (method === "POST" && path === "/v1/workshops") return registerWorkshop(request, env);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/whoami$/);
+    if (m && method === "GET") return whoamiWorkshop(request, env, m[1]);
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/verify$/);
     if (m && method === "POST") return verifyWorkshop(request, env, m[1]);
