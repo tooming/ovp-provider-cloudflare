@@ -1,0 +1,86 @@
+{
+  "passport": "urn:ovpf:018f3a1b-0000-7000-8000-0000000000aa",
+  "vehicle": {
+    "type": "Vehicle",
+    "vin": "WBADM01010BR12345",
+    "make": "BMW",
+    "model": "523i",
+    "modelYear": "1998",
+    "trim": "Sedan",
+    "bodyType": "Sedan",
+    "driveType": "RWD",
+    "fuelType": "Gasoline",
+    "engine": "M52B25 2.5L I6 (DME MS41)",
+    "transmission": "Manual",
+    "gears": 5,
+    "color": "Cosmos Black"
+  },
+  "owner": "did:key:zOwnerB",
+  "access": [
+    {
+      "identity": "did:key:zOwnerB",
+      "role": "owner"
+    }
+  ],
+  "mileage": {
+    "value": 212300,
+    "unit": "KMT"
+  },
+  "open_faults": [],
+  "service_history": [
+    {
+      "date": "2026-06-20",
+      "type": "repair",
+      "total": 137.9,
+      "currency": "EUR",
+      "odometer": 211500
+    }
+  ],
+  "coding_changes": [],
+  "fuel_events": 0,
+  "ai_insights": [
+    {
+      "insight": "Pre-cat O2 sensor fault appeared at ~210k km and was resolved by replacement; monitor fuel trims for the aux water pump code known to recur on M52.",
+      "confidence": 0.62
+    }
+  ],
+  "timeline": [
+    {
+      "at": "1998-03-01T00:00:00+02:00",
+      "type": "PassportOpened",
+      "producer": "owner-cli"
+    },
+    {
+      "at": "2026-06-01T09:15:00+03:00",
+      "type": "OdometerReading",
+      "producer": "owner-cli"
+    },
+    {
+      "at": "2026-06-15T14:02:00+03:00",
+      "type": "DiagnosticTroubleCodeRead",
+      "producer": "kline-diag"
+    },
+    {
+      "at": "2026-06-20T11:00:00+03:00",
+      "type": "ServicePerformed",
+      "producer": "owner-cli"
+    },
+    {
+      "at": "2026-06-20T11:20:00+03:00",
+      "type": "DiagnosticTroubleCodeCleared",
+      "producer": "kline-diag"
+    },
+    {
+      "at": "2026-06-22T10:00:00Z",
+      "type": "AiInsightGenerated",
+      "producer": "ovp-insights"
+    },
+    {
+      "at": "2026-07-01T12:00:00+03:00",
+      "type": "AccessGranted",
+      "producer": "owner-cli"
+    }
+  ],
+  "event_count": 8,
+  "corrections_applied": 1
+}

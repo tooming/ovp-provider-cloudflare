@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open Vehicle Passport</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px;
+         margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.4rem; }
+  .field { color: #666; font-size: 0.85rem; text-transform: uppercase;
+           letter-spacing: 0.03em; }
+  .card { border: 1px solid #8884; border-radius: 10px; padding: 1rem 1.25rem;
+          margin-bottom: 1rem; }
+  .timeline-item { border-left: 2px solid #8884; padding: 0.25rem 0 0.25rem 1rem;
+                    margin-left: 0.4rem; }
+  .timeline-item time { color: #666; font-size: 0.85rem; }
+  .error { color: #c0392b; }
+  a.export { font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<div id="app">Loading…</div>
+
+<script>
+async function main() {
+  const app = document.getElementById("app");
+  const m = location.pathname.match(/\/p\/([0-9a-fA-F-]{36})/);
+  if (!m) {
+    app.innerHTML = "<p class='error'>No passport id in URL. Expected /p/&lt;uuid&gt;.</p>";
+    return;
+  }
+  const id = m[1];
+
+  let state;
+  try {
+    const resp = await fetch(`/v1/passports/${id}`);
+    if (resp.status === 404) {
+      app.innerHTML = "<p class='error'>No such passport on this provider.</p>";
+      return;
+    }
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    state = await resp.json();
+  } catch (e) {
+    app.innerHTML = `<p class="error">Could not load passport: ${e}</p>`;
+    return;
+  }
+
+  const v = state.vehicle || {};
+  const desc = [v.modelYear, v.make, v.model].filter(Boolean).join(" ");
+  const mileage = state.mileage ? `${state.mileage.value} ${state.mileage.unit}` : "unknown";
+
+  const timeline = (state.timeline || []).slice().reverse().map(t =>
+    `<div class="timeline-item"><time>${(t.at || "").slice(0, 10)}</time><br>
+     <strong>${t.type || ""}</strong>${t.producer ? " — " + t.producer : ""}</div>`
+  ).join("") || "<p>No events yet.</p>";
+
+  const faults = (state.open_faults || []).map(f =>
+    `<li>${f.module || ""} ${f.code} — ${f.text || ""}</li>`
+  ).join("") || "<li>none</li>";
+
+  app.innerHTML = `
+    <h1>${desc || "Vehicle passport"}</h1>
+    <div class="card">
+      <div class="field">VIN</div><div>${v.vin || "(not set)"}</div>
+      <div class="field">Mileage</div><div>${mileage}</div>
+      <div class="field">Open faults</div><ul>${faults}</ul>
+    </div>
+    <h2>Timeline</h2>
+    ${timeline}
+    <p><a class="export" href="/v1/passports/${id}/export">Export raw NDJSON</a></p>
+  `;
+}
+main();
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ovp-provider-cloudflare",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-05-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Same domain serves both the static viewer and the /v1/* API --
+  // same-origin, no CORS needed. run_worker_first means /v1/* always
+  // hits the Worker instead of being treated as a missing static asset;
+  // everything else falls through to viewer/, and single-page-application
+  // fallback handles /p/<uuid> the same way the CloudFront Function does
+  // for the AWS provider -- except built in, no custom edge function needed.
+  "assets": {
+    "directory": "./viewer",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/v1/*"]
+  },
+
+  "kv_namespaces": [
+    { "binding": "PASSPORTS", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+  ],
+
+  "routes": [
+    { "pattern": "passport.skoor.ee", "custom_domain": true }
+  ]
+}

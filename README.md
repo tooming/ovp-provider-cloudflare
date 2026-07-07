@@ -1,0 +1,85 @@
+# ovp-provider-cloudflare
+
+A second, independent reference Provider for
+[Open Vehicle Passport](https://github.com/tooming/openvehiclepassport) --
+alongside [ovp-provider-aws](https://github.com/tooming/ovp-provider-aws),
+not instead of it. Different language, different storage engine, same
+protocol: that's the actual point of building two.
+
+Serverless: one Worker (JS, no framework) + one KV namespace + Pages/assets
+for the static viewer. Free tier covers a single car's worth of traffic
+many times over (100k requests/day, 1k KV writes/day).
+
+## Why a second implementation, in a second language
+
+`src/ovpf-core.js` is a from-scratch port of
+[reference/python/ovpf_core.py](https://github.com/tooming/openvehiclepassport/tree/main/reference/python),
+not a translation-by-copy. Porting it surfaced a real bug in the Python
+reference: `json.dumps(45.0)` keeps the `.0`, but JS's
+`(45.0).toString()` doesn't, so the two languages canonicalized (and
+therefore hashed) the exact same logical event differently the moment
+a numeric field was a whole number. See
+[openvehiclepassport's spec/OVPF.md §7](https://github.com/tooming/openvehiclepassport/blob/main/spec/OVPF.md)
+and `conformance/fixtures/canonicalization.json` for the fix and the
+shared test vectors. `test/ovpf-core.test.js` proves both
+implementations now produce byte-identical hashes for the same event,
+including that exact edge case.
+
+## API
+
+Same contract as `ovp-provider-aws` -- same routes, same write-token
+model, same recordedAt-is-immutable rule:
+
+| Method | Path                          | Auth                        |
+|--------|-------------------------------|------------------------------|
+| POST   | `/v1/passports`                | none (mints id + writeToken) |
+| GET    | `/v1/passports/{id}`           | none -- the id is the read capability |
+| POST   | `/v1/passports/{id}/events`    | `Authorization: Bearer <writeToken>` |
+| GET    | `/v1/passports/{id}/export`    | none |
+
+## Storage
+
+One KV namespace, `PASSPORTS`:
+
+- `PASSPORT#<id>#META` -- write-token hash.
+- `PASSPORT#<id>#EVENT#<recordedAt>#<eventId>` -- one immutable value per
+  event. `list({prefix})` returns keys in sorted order, same role
+  DynamoDB's `Query`-by-`sk` plays for the AWS provider -- no schema,
+  no SQL, the KV key ordering does the work.
+
+## Viewer
+
+`viewer/index.html` is the identical file used by `ovp-provider-aws` --
+provider-agnostic by construction, since it only ever calls same-origin
+`/v1/*`. Served via Cloudflare's `assets` binding with
+`not_found_handling: "single-page-application"` (built-in SPA fallback
+for `/p/<uuid>` -- no custom edge function needed, unlike the AWS side's
+CloudFront Function). `run_worker_first: ["/v1/*"]` keeps API paths from
+ever being treated as a missing static asset.
+
+## Test
+
+```
+npm test              # node --test, no Cloudflare account needed
+npm run dev           # wrangler dev, local KV emulation, no account needed
+```
+
+`test/fixtures/` is copied from `openvehiclepassport/conformance/fixtures`
+-- shared, language-agnostic test vectors, not an implementation to keep
+in sync via a golden-hash test. Re-copy if that repo's fixtures change.
+
+## Deploy
+
+Requires `wrangler login` (interactive, your browser) and a real KV
+namespace:
+
+```
+wrangler login
+wrangler kv namespace create PASSPORTS   # put the returned id into wrangler.jsonc
+wrangler deploy
+```
+
+`wrangler.jsonc` already routes `passport.skoor.ee` as a custom domain
+-- since that zone is on Cloudflare, this needs no separate cert request
+or CNAME dance the way the AWS provider's CloudFront setup does. Once
+deployed, Cloudflare handles TLS for the custom domain automatically.

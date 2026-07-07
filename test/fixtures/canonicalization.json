@@ -1,0 +1,15 @@
+[
+  {"input": 45.0, "canonical": "45"},
+  {"input": 210000, "canonical": "210000"},
+  {"input": 137.9, "canonical": "137.9"},
+  {"input": -0.0, "canonical": "0"},
+  {"input": true, "canonical": "true"},
+  {"input": false, "canonical": "false"},
+  {"input": null, "canonical": "null"},
+  {"input": "hello", "canonical": "\"hello\""},
+  {"input": "café", "canonical": "\"café\""},
+  {"input": [3, 1, 2], "canonical": "[3,1,2]"},
+  {"input": {"b": 1, "a": 2}, "canonical": "{\"a\":2,\"b\":1}"},
+  {"input": {"b": 1, "a": [45.0, true, null, "x"]},
+   "canonical": "{\"a\":[45,true,null,\"x\"],\"b\":1}"}
+]
