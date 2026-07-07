@@ -33,10 +33,18 @@
                      border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem; }
   code.dns { display: block; background: #8881; padding: 0.5rem 0.7rem; border-radius: 6px;
              font-size: 0.85rem; margin: 0.4rem 0; overflow-x: auto; white-space: pre; }
+  .print-only { display: none; }
+  @media print {
+    .no-print { display: none !important; }
+    .print-only { display: block; }
+    body { max-width: 100%; color: #000; }
+    .card, .timeline-item { break-inside: avoid; }
+    a { color: #000; text-decoration: none; }
+  }
 </style>
 </head>
 <body>
-<nav><a href="/">Passport home</a><a href="/workshop">Register a workshop</a></nav>
+<nav class="no-print"><a href="/">Passport home</a><a href="/workshop">Register a workshop</a></nav>
 <div id="app">Loading…</div>
 
 <script>
@@ -174,6 +182,7 @@ async function renderPassport(app, id) {
 
   app.innerHTML = `
     <h1>${desc || "Vehicle passport"}</h1>
+    <p class="print-only qr-caption">Printed ${fmtTime(new Date().toISOString())} &mdash; full history: ${esc(location.href)}</p>
     <div class="card">
       <div class="field">VIN</div><div>${esc(v.vin) || "(not set)"}</div>
       <div class="field">Mileage</div><div>${mileage}</div>
@@ -181,44 +190,47 @@ async function renderPassport(app, id) {
     </div>
     <div class="qr-box"><canvas id="qr"></canvas></div>
     <div class="qr-caption">passport sticker (scan to open this page)</div>
-    <div class="row">
+    <div class="row no-print">
       <input id="qr-link" value="${esc(location.href)}" readonly style="flex:1">
       <button id="qr-copy-btn">Copy link</button>
+      <button id="print-btn">Print / Save as PDF</button>
     </div>
 
-    <h2>Vehicle info</h2>
-    <p>Add or correct VIN/make/model/year -- appends a <code>VehicleIdentified</code>
-    event; the original genesis event is never touched.</p>
-    <div class="row">
-      <input id="edit-vin" placeholder="VIN">
-      <input id="edit-make" placeholder="Make">
-      <input id="edit-model" placeholder="Model">
-      <input id="edit-year" placeholder="Year" style="width:5rem">
-      <button id="edit-btn">Save</button>
-    </div>
-    <p id="edit-status" class="error"></p>
+    <div class="no-print">
+      <h2>Vehicle info</h2>
+      <p>Add or correct VIN/make/model/year -- appends a <code>VehicleIdentified</code>
+      event; the original genesis event is never touched.</p>
+      <div class="row">
+        <input id="edit-vin" placeholder="VIN">
+        <input id="edit-make" placeholder="Make">
+        <input id="edit-model" placeholder="Model">
+        <input id="edit-year" placeholder="Year" style="width:5rem">
+        <button id="edit-btn">Save</button>
+      </div>
+      <p id="edit-status" class="error"></p>
 
-    <h2>Log an event</h2>
-    <div class="row">
-      <select id="log-type">
-        <option value="ServicePerformed">Service performed</option>
-        <option value="TyresInstalled">Tyres installed</option>
-        <option value="PartReplaced">Part replaced</option>
-        <option value="OdometerReading">Odometer reading</option>
-      </select>
-      <input id="log-desc" placeholder="What happened, e.g. Changed engine oil">
-      <input id="log-odo" placeholder="Odometer (km)" style="width:9rem">
+      <h2>Log an event</h2>
+      <div class="row">
+        <select id="log-type">
+          <option value="ServicePerformed">Service performed</option>
+          <option value="TyresInstalled">Tyres installed</option>
+          <option value="PartReplaced">Part replaced</option>
+          <option value="OdometerReading">Odometer reading</option>
+        </select>
+        <input id="log-desc" placeholder="What happened, e.g. Changed engine oil">
+        <input id="log-odo" placeholder="Odometer (km)" style="width:9rem">
+      </div>
+      <div class="row">
+        <input id="log-domain" placeholder="Logging as a verified workshop? domain, e.g. skoor.ee (optional)">
+        <button id="log-btn">Log event</button>
+      </div>
+      <p id="log-session-hint" class="qr-caption"></p>
+      <p id="log-status" class="error"></p>
     </div>
-    <div class="row">
-      <input id="log-domain" placeholder="Logging as a verified workshop? domain, e.g. skoor.ee (optional)">
-      <button id="log-btn">Log event</button>
-    </div>
-    <p id="log-session-hint" class="qr-caption"></p>
-    <p id="log-status" class="error"></p>
 
     <h2>Timeline</h2>
     ${timeline}
-    <p><a class="export" href="/v1/passports/${id}/export">Export raw NDJSON</a></p>
+    <p class="no-print"><a class="export" href="/v1/passports/${id}/export">Export raw NDJSON</a></p>
   `;
 
   // Same-origin URL for this exact passport -- whichever provider is
@@ -228,6 +240,7 @@ async function renderPassport(app, id) {
 
   document.getElementById("qr-copy-btn").onclick = () =>
     copyToClipboard(location.href, document.getElementById("qr-copy-btn"));
+  document.getElementById("print-btn").onclick = () => window.print();
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
   document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
 
