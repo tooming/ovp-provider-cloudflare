@@ -81,5 +81,14 @@ wrangler deploy
 
 `wrangler.jsonc` already routes `passport.skoor.ee` as a custom domain
 -- since that zone is on Cloudflare, this needs no separate cert request
-or CNAME dance the way the AWS provider's CloudFront setup does. Once
-deployed, Cloudflare handles TLS for the custom domain automatically.
+or CNAME dance the way the AWS provider's CloudFront setup does (that
+one lives at `passport-aws.skoor.ee` instead -- two providers can't
+share one hostname). Once deployed, Cloudflare handles TLS for the
+custom domain automatically.
+
+Then generate a QR against this deployment (this is `qr.py`'s default
+base URL already, no `--base-url` flag needed):
+
+```
+python3 qr.py <uuid> -o car-passport.svg
+```
