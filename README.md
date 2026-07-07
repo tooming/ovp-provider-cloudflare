@@ -89,7 +89,11 @@ up to ~60s global propagation), not a bug in this Worker -- but it's a
 real, disclosable tradeoff of choosing KV over a strongly-consistent
 store like DynamoDB. If a client (the QR viewer, `ovpf --sync`) reads
 immediately after writing and doesn't see its own write yet, that's
-this, not corruption.
+this, not corruption. Also observed on the workshop event log (same
+`list({prefix})` read pattern): removing a mechanic and immediately
+re-reading the workshop can still show them present for a few seconds
+-- same cause, same fix (wait and re-read), not a logic bug in
+`reduceWorkshop`.
 
 ## Viewer
 

@@ -78,6 +78,37 @@ function fmtTime(iso) {
   }));
 }
 
+async function copyToClipboard(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // clipboard API needs a secure context/permission; fall back to a
+    // manual select so the user can still Cmd/Ctrl-C it themselves.
+    prompt("Copy this:", text);
+    return;
+  }
+  if (btn) {
+    const original = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = original; }, 1500);
+  }
+}
+
+// One workshop "session" per browser -- a POC-simple stand-in for a real
+// login. Storing the actual secret in localStorage is what lets "Log an
+// event" on any passport auto-attach it when the domain matches, which is
+// the whole point (see the user's "how do I act as this workshop" ask).
+const WORKSHOP_SESSION_KEY = "ovp_workshop_session";
+function getWorkshopSession() {
+  try { return JSON.parse(localStorage.getItem(WORKSHOP_SESSION_KEY)); } catch { return null; }
+}
+function setWorkshopSession(domain, secret) {
+  localStorage.setItem(WORKSHOP_SESSION_KEY, JSON.stringify({ domain, secret }));
+}
+function clearWorkshopSession() {
+  localStorage.removeItem(WORKSHOP_SESSION_KEY);
+}
+
 async function api(path, opts) {
   const resp = await fetch(path, opts);
   let body = null;
@@ -150,6 +181,10 @@ async function renderPassport(app, id) {
     </div>
     <div class="qr-box"><canvas id="qr"></canvas></div>
     <div class="qr-caption">passport sticker (scan to open this page)</div>
+    <div class="row">
+      <input id="qr-link" value="${esc(location.href)}" readonly style="flex:1">
+      <button id="qr-copy-btn">Copy link</button>
+    </div>
 
     <h2>Vehicle info</h2>
     <p>Add or correct VIN/make/model/year -- appends a <code>VehicleIdentified</code>
@@ -178,6 +213,7 @@ async function renderPassport(app, id) {
       <input id="log-domain" placeholder="Logging as a verified workshop? domain, e.g. skoor.ee (optional)">
       <button id="log-btn">Log event</button>
     </div>
+    <p id="log-session-hint" class="qr-caption"></p>
     <p id="log-status" class="error"></p>
 
     <h2>Timeline</h2>
@@ -190,8 +226,19 @@ async function renderPassport(app, id) {
   QRCode.toCanvas(document.getElementById("qr"), location.href,
     { errorCorrectionLevel: "M", margin: 2, scale: 5 });
 
+  document.getElementById("qr-copy-btn").onclick = () =>
+    copyToClipboard(location.href, document.getElementById("qr-copy-btn"));
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
   document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
+
+  // If this browser is signed in as a workshop, default the domain field
+  // to it -- one less thing to type every time you log real work.
+  const session = getWorkshopSession();
+  if (session) {
+    document.getElementById("log-domain").value = session.domain;
+    document.getElementById("log-session-hint").textContent =
+      `Signed in as ${session.domain} in this browser -- events logged with this domain will be verified automatically.`;
+  }
 }
 
 function envelope(vehicleId, type, data, producer) {
@@ -208,9 +255,10 @@ function envelope(vehicleId, type, data, producer) {
   };
 }
 
-async function postEvent(id, ev, statusEl) {
+async function postEvent(id, ev, statusEl, extraHeaders) {
   const r = await api(`/v1/passports/${id}/events`, {
-    method: "POST", headers: { "content-type": "application/json" },
+    method: "POST",
+    headers: { "content-type": "application/json", ...(extraHeaders || {}) },
     body: JSON.stringify(ev),
   });
   if (!r.ok) {
@@ -251,14 +299,19 @@ async function submitLogEvent(id, currentVehicle) {
   else data = { serviceType: desc, odometer };
 
   // producer.domain is just this client's claim -- the provider is the
-  // only one who can turn that into producer.verified, by checking its
-  // own workshop registry at write time (see docs/TRUST.md). Submitting
-  // verified:true here would be silently stripped server-side.
+  // only one who can turn that into producer.verified, and only if this
+  // request also proves it holds that workshop's secret (see
+  // docs/TRUST.md). Submitting verified:true here would be silently
+  // stripped server-side regardless.
   const producer = domain
     ? { type: "Workshop", domain, name: domain }
     : { type: "Manual", name: "web" };
   const ev = envelope(id, type, data, producer);
-  if (await postEvent(id, ev, status)) renderPassport(document.getElementById("app"), id);
+
+  const session = getWorkshopSession();
+  const headers = (domain && session && session.domain === domain)
+    ? { authorization: `Bearer ${session.secret}` } : {};
+  if (await postEvent(id, ev, status, headers)) renderPassport(document.getElementById("app"), id);
 }
 
 // --- Workshop registration + DNS verification ------------------------------
@@ -288,13 +341,41 @@ function renderWorkshopForm(app) {
       body: JSON.stringify({ domain, name }),
     });
     if (!r.ok) { status.textContent = `Error: ${r.body?.error || r.status}`; return; }
-    location.href = `/workshop/${encodeURIComponent(r.body.domain)}`;
+    if (r.body.workshopSecret) {
+      // Freshly minted -- show it once, here, now. The API never returns
+      // it again after this response.
+      setWorkshopSession(r.body.domain, r.body.workshopSecret);
+      renderWorkshopSecretReveal(app, r.body);
+    } else {
+      location.href = `/workshop/${encodeURIComponent(r.body.domain)}`;
+    }
   };
   document.getElementById("ws-existing-link").onclick = (e) => {
     e.preventDefault();
     const domain = prompt("Domain to look up:");
     if (domain) location.href = `/workshop/${encodeURIComponent(domain.trim().toLowerCase())}`;
   };
+}
+
+function renderWorkshopSecretReveal(app, view) {
+  app.innerHTML = `
+    <h1>${esc(view.name)} registered</h1>
+    <p><strong>Save this secret now -- it will not be shown again.</strong>
+    It's what proves a future request actually comes from you, not just
+    someone who knows this domain's name.</p>
+    <div class="row">
+      <input id="ws-secret-field" value="${esc(view.workshopSecret)}" readonly style="flex:1">
+      <button id="ws-secret-copy">Copy</button>
+    </div>
+    <p>This browser is now signed in as <strong>${esc(view.domain)}</strong> --
+    the "Log an event" form on any passport will use it automatically once
+    the domain is verified.</p>
+    <button id="ws-continue-btn">Continue</button>
+  `;
+  document.getElementById("ws-secret-copy").onclick = () =>
+    copyToClipboard(view.workshopSecret, document.getElementById("ws-secret-copy"));
+  document.getElementById("ws-continue-btn").onclick = () =>
+    { location.href = `/workshop/${encodeURIComponent(view.domain)}`; };
 }
 
 async function renderWorkshopStatus(app, domain) {
@@ -307,11 +388,13 @@ async function renderWorkshopStatus(app, domain) {
   }
   if (!r.ok) { app.innerHTML = `<p class="error">HTTP ${r.status}</p>`; return; }
   const w = r.body;
+  const session = getWorkshopSession();
+  const signedIn = session && session.domain === w.domain;
 
   const verifiedBlock = w.verified
     ? `<p><span class="badge-verified">✓ Verified</span> since ${fmtTime(w.verifiedAt)}.
-       Events logged with <code>producer.domain: "${esc(w.domain)}"</code> on this
-       provider now get stamped <code>verified: true</code> automatically.</p>`
+       Events logged with <code>producer.domain: "${esc(w.domain)}"</code> and
+       the right secret get stamped <code>verified: true</code> automatically.</p>`
     : `<p>Not verified yet. Add this DNS record, then check again --
        propagation can take a few minutes:</p>
        <code class="dns">Type:  TXT
@@ -320,6 +403,35 @@ Value: ${esc(w.dnsRecord.value)}</code>
        <button id="ws-verify-btn">Check now</button>
        <p id="ws-verify-status" class="error"></p>`;
 
+  const signInBlock = signedIn
+    ? `<p>This browser is signed in as <strong>${esc(w.domain)}</strong>.
+       <button id="ws-signout-btn">Sign out</button></p>`
+    : `<h2>Sign in as this workshop</h2>
+       <p>Paste the secret you were given at registration to log verified
+       events and manage mechanics from this browser. Knowing the domain
+       is verified isn't enough on its own -- only the secret proves you're
+       the one who registered it.</p>
+       <div class="row">
+         <input id="ws-secret-input" type="password" placeholder="workshop secret" style="flex:1">
+         <button id="ws-signin-btn">Sign in</button>
+       </div>
+       <p id="ws-signin-status" class="error"></p>
+       <p>Lost it? <a href="#" id="ws-reset-link">Reset the secret</a>
+       (needs the DNS record to still be in place).</p>`;
+
+  const mechanicsBlock = signedIn ? `
+    <h2>Mechanics</h2>
+    <p>Attribute logged work to a specific person. Removing someone doesn't
+    touch any event they already produced.</p>
+    <ul>${(w.mechanics || []).map(m =>
+      `<li>${esc(m.name)} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">Remove</button></li>`
+    ).join("") || "<li>none yet</li>"}</ul>
+    <div class="row">
+      <input id="ws-mech-name" placeholder="mechanic name">
+      <button id="ws-mech-add-btn">Add</button>
+    </div>
+    <p id="ws-mech-status" class="error"></p>` : "";
+
   app.innerHTML = `
     <h1>${esc(w.name)}</h1>
     <div class="card">
@@ -327,22 +439,72 @@ Value: ${esc(w.dnsRecord.value)}</code>
       <div class="field">Status</div><div>${w.verified ? "✓ Verified" : "Pending verification"}</div>
     </div>
     ${verifiedBlock}
+    ${signInBlock}
+    ${mechanicsBlock}
     <p><a href="/workshop">Register another domain</a></p>
   `;
 
-  const btn = document.getElementById("ws-verify-btn");
-  if (btn) btn.onclick = async () => {
+  const verifyBtn = document.getElementById("ws-verify-btn");
+  if (verifyBtn) verifyBtn.onclick = async () => {
     const status = document.getElementById("ws-verify-status");
-    btn.disabled = true;
+    verifyBtn.disabled = true;
     status.textContent = "Checking DNS…";
     const vr = await api(`/v1/workshops/${encodeURIComponent(domain)}/verify`, { method: "POST" });
-    if (!vr.ok) { status.textContent = `Error: ${vr.body?.error || vr.status}`; btn.disabled = false; return; }
+    if (!vr.ok) { status.textContent = `Error: ${vr.body?.error || vr.status}`; verifyBtn.disabled = false; return; }
     if (vr.body.verified) { renderWorkshopStatus(app, domain); return; }
     status.textContent = vr.body.checkError
       ? `DNS check failed: ${vr.body.checkError}`
       : `Not found yet (saw: ${JSON.stringify(vr.body.found || [])}). DNS can take a few minutes to propagate -- try again shortly.`;
-    btn.disabled = false;
+    verifyBtn.disabled = false;
   };
+
+  const signinBtn = document.getElementById("ws-signin-btn");
+  if (signinBtn) signinBtn.onclick = () => {
+    const status = document.getElementById("ws-signin-status");
+    const secret = document.getElementById("ws-secret-input").value.trim();
+    if (!secret) { status.textContent = "Paste your workshop secret first."; return; }
+    // Not validated here -- a wrong secret just fails clearly on first
+    // real use (adding a mechanic, logging a verified event).
+    setWorkshopSession(w.domain, secret);
+    renderWorkshopStatus(app, domain);
+  };
+
+  const signoutBtn = document.getElementById("ws-signout-btn");
+  if (signoutBtn) signoutBtn.onclick = () => { clearWorkshopSession(); renderWorkshopStatus(app, domain); };
+
+  const resetLink = document.getElementById("ws-reset-link");
+  if (resetLink) resetLink.onclick = async (e) => {
+    e.preventDefault();
+    if (!confirm("Reset the secret? This needs the DNS TXT record to still be in place, and invalidates the old secret immediately.")) return;
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/secret/reset`, { method: "POST" });
+    if (!rr.ok) { alert(`Could not reset: ${rr.body?.error || rr.status}`); return; }
+    setWorkshopSession(w.domain, rr.body.workshopSecret);
+    renderWorkshopSecretReveal(app, { ...w, workshopSecret: rr.body.workshopSecret });
+  };
+
+  const addBtn = document.getElementById("ws-mech-add-btn");
+  if (addBtn) addBtn.onclick = async () => {
+    const status = document.getElementById("ws-mech-status");
+    const name = document.getElementById("ws-mech-name").value.trim();
+    if (!name) { status.textContent = "Enter a name."; return; }
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${session.secret}` },
+      body: JSON.stringify({ name }),
+    });
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    renderWorkshopStatus(app, domain);
+  };
+
+  document.querySelectorAll(".ws-remove-mech").forEach(btn => {
+    btn.onclick = async () => {
+      const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics/${encodeURIComponent(btn.dataset.id)}`, {
+        method: "DELETE", headers: { authorization: `Bearer ${session.secret}` },
+      });
+      if (!rr.ok) { alert(`Error: ${rr.body?.error || rr.status}`); return; }
+      renderWorkshopStatus(app, domain);
+    };
+  });
 }
 
 async function main() {
