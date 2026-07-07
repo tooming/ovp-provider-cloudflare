@@ -76,33 +76,120 @@ async function createPassport(request, env) {
   return json({ id, readUrl: `/v1/passports/${id}` }, 201);
 }
 
-function workshopKey(domain) {
-  return `WORKSHOP#${(domain || "").trim().toLowerCase().replace(/\.+$/, "")}`;
+// --- Workshops are event-sourced too, same discipline as vehicle passports:
+// an append-only log (key WORKSHOP#<domain>#EVENT#<recordedAt>#<id>),
+// hash-chained with the same ovpf-core.js primitives, current state always
+// a replay, never a mutated row. WorkshopRegistered / WorkshopDomainVerified
+// / WorkshopSecretReset / WorkshopMechanicAdded / WorkshopMechanicRemoved.
+
+function workshopDomain(domain) {
+  return (domain || "").trim().toLowerCase().replace(/\.+$/, "");
+}
+
+function workshopEventKeyPrefix(domain) {
+  return `WORKSHOP#${workshopDomain(domain)}#EVENT#`;
+}
+
+function workshopEventKey(domain, ev) {
+  return `${workshopEventKeyPrefix(domain)}${ev.recordedAt}#${ev.id}`;
+}
+
+function newWorkshopEvent(type, data) {
+  const now = new Date().toISOString();
+  return { id: "urn:uuid:" + crypto.randomUUID(), type, occurredAt: now, recordedAt: now, data };
+}
+
+async function loadWorkshopEvents(env, domain) {
+  const events = [];
+  let cursor;
+  do {
+    const page = await env.PASSPORTS.list({ prefix: workshopEventKeyPrefix(domain), cursor });
+    for (const k of page.keys) {
+      const v = await env.PASSPORTS.get(k.name);
+      if (v) events.push(JSON.parse(v));
+    }
+    cursor = page.cursor;
+  } while (cursor);
+  events.sort((a, b) => (a.recordedAt || "").localeCompare(b.recordedAt || "") || (a.id || "").localeCompare(b.id || ""));
+  return events;
+}
+
+async function appendWorkshopEvent(env, domain, ev) {
+  const existing = await loadWorkshopEvents(env, domain);
+  const prevHash = existing.length ? existing[existing.length - 1].hash : null;
+  delete ev.hash;
+  if (prevHash) ev.prevHash = prevHash; else delete ev.prevHash;
+  ev.hash = await ovpf.eventHash(ev);
+  await env.PASSPORTS.put(workshopEventKey(domain, ev), JSON.stringify(ev));
+  return ev;
+}
+
+function reduceWorkshop(events) {
+  const state = { domain: null, name: null, verified: false, verifiedAt: null,
+                   verificationToken: null, secretHash: null, mechanics: new Map() };
+  for (const ev of events) {
+    const t = ev.type, d = ev.data || {};
+    if (t === "WorkshopRegistered") {
+      state.domain = d.domain; state.name = d.name;
+      state.verificationToken = d.verificationToken; state.secretHash = d.secretHash;
+    } else if (t === "WorkshopDomainVerified") {
+      state.verified = true; state.verifiedAt = ev.occurredAt;
+    } else if (t === "WorkshopSecretReset") {
+      state.secretHash = d.secretHash;
+    } else if (t === "WorkshopMechanicAdded") {
+      state.mechanics.set(d.mechanicId, d.name);
+    } else if (t === "WorkshopMechanicRemoved") {
+      state.mechanics.delete(d.mechanicId);
+    }
+  }
+  state.mechanics = [...state.mechanics].map(([mechanicId, name]) => ({ mechanicId, name }));
+  return state;
 }
 
 async function getWorkshop(env, domain) {
-  const v = await env.PASSPORTS.get(workshopKey(domain));
-  return v ? JSON.parse(v) : null;
+  const events = await loadWorkshopEvents(env, workshopDomain(domain));
+  return events.length ? reduceWorkshop(events) : null;
 }
 
-function workshopView(item) {
+function workshopView(state) {
   return {
-    domain: item.domain,
-    name: item.name,
-    verified: !!item.verified,
-    verifiedAt: item.verifiedAt || null,
-    verificationToken: item.verificationToken,
+    domain: state.domain,
+    name: state.name,
+    verified: !!state.verified,
+    verifiedAt: state.verifiedAt || null,
+    verificationToken: state.verificationToken,
+    mechanics: state.mechanics,
     dnsRecord: {
       type: "TXT",
-      name: `_ovp-verify.${item.domain}`,
-      value: `ovp-verify=${item.verificationToken}`,
+      name: `_ovp-verify.${state.domain}`,
+      value: `ovp-verify=${state.verificationToken}`,
     },
   };
 }
 
-function randomToken() {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
+function randomToken(bytesLen = 16) {
+  const bytes = crypto.getRandomValues(new Uint8Array(bytesLen));
   return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function randomSecret() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function secretHash(secret) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function checkSecret(state, request) {
+  // Bearer <workshopSecret> -- proves this request holds the workshop
+  // identity, not just that it knows a verified domain name exists.
+  // Without this, anyone could claim producer.domain: "skoor.ee" and get
+  // the checkmark -- found and fixed live, this was a real gap.
+  const auth = request.headers.get("authorization") || "";
+  const token = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
+  return !!token && state.secretHash === (await secretHash(token));
 }
 
 async function dnsTxtLookup(name) {
@@ -126,7 +213,7 @@ async function registerWorkshop(request, env) {
     return json({ error: "body must be JSON" }, 400);
   }
 
-  const domain = (body.domain || "").trim().toLowerCase().replace(/\.+$/, "");
+  const domain = workshopDomain(body.domain);
   if (!domain || !domain.includes(".")) {
     return json({ error: 'domain required, e.g. "skoor.ee"' }, 400);
   }
@@ -134,42 +221,101 @@ async function registerWorkshop(request, env) {
   const existing = await getWorkshop(env, domain);
   if (existing) return json(workshopView(existing), 200);
 
-  const item = {
+  const workshopSecret = randomSecret();
+  await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopRegistered", {
     domain, name: body.name || domain,
     verificationToken: randomToken(),
-    verified: false, createdAt: new Date().toISOString(),
-  };
-  await env.PASSPORTS.put(workshopKey(domain), JSON.stringify(item));
-  return json(workshopView(item), 201);
+    secretHash: await secretHash(workshopSecret),
+  }));
+
+  const view = workshopView(await getWorkshop(env, domain));
+  view.workshopSecret = workshopSecret;
+  view.note = "Save workshopSecret now -- it authenticates you as this " +
+    "workshop (logging verified events, managing mechanics) and won't be " +
+    "shown again. Lost it? POST /v1/workshops/{domain}/secret/reset " +
+    "while you still control the domain's DNS.";
+  return json(view, 201);
 }
 
 async function readWorkshop(request, env, domain) {
-  const item = await getWorkshop(env, domain);
-  if (!item) return json({ error: "no such workshop registered" }, 404);
-  return json(workshopView(item));
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  return json(workshopView(state));
 }
 
 async function verifyWorkshop(request, env, domain) {
-  const item = await getWorkshop(env, domain);
-  if (!item) return json({ error: "no such workshop registered" }, 404);
-  if (item.verified) return json(workshopView(item));
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  if (state.verified) return json(workshopView(state));
 
-  const expected = `ovp-verify=${item.verificationToken}`;
+  const expected = `ovp-verify=${state.verificationToken}`;
   let found;
   try {
-    found = await dnsTxtLookup(`_ovp-verify.${item.domain}`);
+    found = await dnsTxtLookup(`_ovp-verify.${state.domain}`);
   } catch (e) {
-    return json({ ...workshopView(item), checkError: String(e) });
+    return json({ ...workshopView(state), checkError: String(e) });
   }
 
   if (!found.includes(expected)) {
-    return json({ ...workshopView(item), found });
+    return json({ ...workshopView(state), found });
   }
 
-  item.verified = true;
-  item.verifiedAt = new Date().toISOString();
-  await env.PASSPORTS.put(workshopKey(domain), JSON.stringify(item));
-  return json(workshopView(item));
+  await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopDomainVerified", {}));
+  return json(workshopView(await getWorkshop(env, domain)));
+}
+
+async function resetWorkshopSecret(request, env, domain) {
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+
+  const expected = `ovp-verify=${state.verificationToken}`;
+  let found;
+  try {
+    found = await dnsTxtLookup(`_ovp-verify.${state.domain}`);
+  } catch (e) {
+    return json({ error: `DNS check failed: ${e}` });
+  }
+  if (!found.includes(expected)) {
+    return json({ error: "domain does not currently have the expected TXT " +
+                          "record -- cannot reset without proving control" }, 403);
+  }
+
+  const newSecret = randomSecret();
+  await appendWorkshopEvent(env, domain, newWorkshopEvent(
+    "WorkshopSecretReset", { secretHash: await secretHash(newSecret) }));
+  return json({ workshopSecret: newSecret, note: "Save this now -- it won't be shown again." });
+}
+
+async function addMechanic(request, env, domain) {
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  if (!(await checkSecret(state, request))) {
+    return json({ error: "missing or invalid workshop secret" }, 403);
+  }
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+  const name = (body.name || "").trim();
+  if (!name) return json({ error: "name required" }, 400);
+
+  await appendWorkshopEvent(env, domain, newWorkshopEvent(
+    "WorkshopMechanicAdded", { mechanicId: randomToken(6), name }));
+  return json(workshopView(await getWorkshop(env, domain)), 201);
+}
+
+async function removeMechanic(request, env, domain, mechanicId) {
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  if (!(await checkSecret(state, request))) {
+    return json({ error: "missing or invalid workshop secret" }, 403);
+  }
+  await appendWorkshopEvent(env, domain, newWorkshopEvent(
+    "WorkshopMechanicRemoved", { mechanicId }));
+  return json(workshopView(await getWorkshop(env, domain)));
 }
 
 async function appendEvent(request, env, id) {
@@ -190,17 +336,20 @@ async function appendEvent(request, env, id) {
   const missing = required.filter(k => !(k in ev));
   if (missing.length) return json({ error: `missing required field(s): ${missing}` }, 400);
 
-  // Server-side provenance stamping (see docs/TRUST.md) -- matches
-  // app.py exactly: a client's producer.verified claim is stripped and
-  // only re-added here, from this provider's own workshop registry, at
-  // write time. Baked into the hash immediately, so a workshop losing
-  // verified status later doesn't retroactively change what it attested.
+  // Server-side provenance stamping (see docs/TRUST.md) -- matches app.py
+  // exactly: a client's producer.verified claim is stripped, and only
+  // re-added here if this request also proves it holds that workshop's
+  // secret (see checkSecret). Knowing a domain is verified is not the
+  // same as being its holder -- found and fixed live, this was a real
+  // gap in the first version. Baked into the hash immediately, so a
+  // workshop losing verified status later doesn't retroactively change
+  // what it attested at the time.
   const producer = ev.producer || {};
   delete producer.verified;
   delete producer.verifiedAt;
   if (producer.domain) {
     const workshop = await getWorkshop(env, producer.domain);
-    if (workshop && workshop.verified) {
+    if (workshop && workshop.verified && (await checkSecret(workshop, request))) {
       producer.verified = true;
       producer.verifiedAt = workshop.verifiedAt;
     }
@@ -257,6 +406,15 @@ export default {
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/verify$/);
     if (m && method === "POST") return verifyWorkshop(request, env, m[1]);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/secret\/reset$/);
+    if (m && method === "POST") return resetWorkshopSecret(request, env, m[1]);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/mechanics\/([^/]+)$/);
+    if (m && method === "DELETE") return removeMechanic(request, env, m[1], m[2]);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/mechanics$/);
+    if (m && method === "POST") return addMechanic(request, env, m[1]);
 
     m = path.match(/^\/v1\/workshops\/([^/]+)$/);
     if (m && method === "GET") return readWorkshop(request, env, m[1]);
