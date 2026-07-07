@@ -126,7 +126,8 @@ async function appendWorkshopEvent(env, domain, ev) {
 
 function reduceWorkshop(events) {
   const state = { domain: null, name: null, verified: false, verifiedAt: null,
-                   verificationToken: null, secretHash: null, mechanicsRaw: new Map() };
+                   verificationToken: null, secretHash: null, mechanicsRaw: new Map(),
+                   pendingResetToken: null };
   for (const ev of events) {
     const t = ev.type, d = ev.data || {};
     if (t === "WorkshopRegistered") {
@@ -134,8 +135,11 @@ function reduceWorkshop(events) {
       state.verificationToken = d.verificationToken; state.secretHash = d.secretHash;
     } else if (t === "WorkshopDomainVerified") {
       state.verified = true; state.verifiedAt = ev.occurredAt;
+    } else if (t === "WorkshopSecretResetRequested") {
+      state.pendingResetToken = d.resetToken;
     } else if (t === "WorkshopSecretReset") {
       state.secretHash = d.secretHash;
+      state.pendingResetToken = null; // challenge consumed
     } else if (t === "WorkshopMechanicAdded") {
       state.mechanicsRaw.set(d.mechanicId, { name: d.name, secretHash: d.secretHash });
     } else if (t === "WorkshopMechanicRemoved") {
@@ -259,7 +263,7 @@ async function registerWorkshop(request, env) {
   view.workshopSecret = workshopSecret;
   view.note = "Save workshopSecret now -- it authenticates you as this " +
     "workshop (logging verified events, managing mechanics) and won't be " +
-    "shown again. Lost it? POST /v1/workshops/{domain}/secret/reset " +
+    "shown again. Lost it? POST /v1/workshops/{domain}/secret/reset/start " +
     "while you still control the domain's DNS.";
   return json(view, 201);
 }
@@ -291,26 +295,67 @@ async function verifyWorkshop(request, env, domain) {
   return json(workshopView(await getWorkshop(env, domain)));
 }
 
-async function resetWorkshopSecret(request, env, domain) {
+async function startSecretReset(request, env, domain) {
+  // Deliberately NOT re-checking verificationToken: that's permanent and
+  // world-readable via a plain GET /v1/workshops/{domain} (needed so the
+  // owner can copy it into their DNS panel), so it stays valid and
+  // replayable forever once added -- anyone who simply reads it back off
+  // the public API could steal a fresh secret at any time, with no proof
+  // they hold live DNS write access right now. A fresh, one-time
+  // challenge -- disclosed only in this response and checked against its
+  // own DNS name -- requires actually adding something to DNS *after*
+  // seeing it, the same bar initial verification cleared, not a
+  // permanently-satisfied one.
   const state = await getWorkshop(env, domain);
   if (!state) return json({ error: "no such workshop registered" }, 404);
 
-  const expected = `ovp-verify=${state.verificationToken}`;
+  // Use the token already in hand (just-minted, or the one already in
+  // `state`) rather than re-reading it back -- KV's list() is only
+  // eventually consistent, so a re-read right after this append can
+  // still return the *previous* (or no) token.
+  let resetToken = state.pendingResetToken;
+  if (!resetToken) {
+    resetToken = randomToken();
+    await appendWorkshopEvent(env, domain, newWorkshopEvent(
+      "WorkshopSecretResetRequested", { resetToken }));
+  }
+  return json({
+    domain,
+    dnsRecord: {
+      type: "TXT", name: `_ovp-reset.${domain}`,
+      value: `ovp-reset=${resetToken}`,
+    },
+    note: "Add this DNS TXT record -- separate from the permanent " +
+      "verification one -- then call confirm. Remove it afterward: " +
+      "unlike the verification record, this one is meant to be " +
+      "temporary, so a stale reset attempt can't be replayed by " +
+      "someone else later.",
+  });
+}
+
+async function confirmSecretReset(request, env, domain) {
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  if (!state.pendingResetToken) {
+    return json({ error: "no reset in progress -- call .../secret/reset/start first" }, 400);
+  }
+
+  const expected = `ovp-reset=${state.pendingResetToken}`;
   let found;
   try {
-    found = await dnsTxtLookup(`_ovp-verify.${state.domain}`);
+    found = await dnsTxtLookup(`_ovp-reset.${state.domain}`);
   } catch (e) {
     return json({ error: `DNS check failed: ${e}` });
   }
   if (!found.includes(expected)) {
-    return json({ error: "domain does not currently have the expected TXT " +
-                          "record -- cannot reset without proving control" }, 403);
+    return json({ found, dnsRecord: { type: "TXT", name: `_ovp-reset.${domain}`, value: expected } });
   }
 
   const newSecret = randomSecret();
   await appendWorkshopEvent(env, domain, newWorkshopEvent(
     "WorkshopSecretReset", { secretHash: await secretHash(newSecret) }));
-  return json({ workshopSecret: newSecret, note: "Save this now -- it won't be shown again." });
+  return json({ workshopSecret: newSecret,
+    note: "Save this now -- it won't be shown again. You can remove the _ovp-reset TXT record now." });
 }
 
 async function addMechanic(request, env, domain) {
@@ -470,8 +515,11 @@ export default {
     m = path.match(/^\/v1\/workshops\/([^/]+)\/verify$/);
     if (m && method === "POST") return verifyWorkshop(request, env, m[1]);
 
-    m = path.match(/^\/v1\/workshops\/([^/]+)\/secret\/reset$/);
-    if (m && method === "POST") return resetWorkshopSecret(request, env, m[1]);
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/secret\/reset\/start$/);
+    if (m && method === "POST") return startSecretReset(request, env, m[1]);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/secret\/reset\/confirm$/);
+    if (m && method === "POST") return confirmSecretReset(request, env, m[1]);
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/mechanics\/([^/]+)$/);
     if (m && method === "DELETE") return removeMechanic(request, env, m[1], m[2]);

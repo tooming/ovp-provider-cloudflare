@@ -36,15 +36,24 @@
   .badge-error { display: inline-block; font-size: 0.72rem; background: #c0392b; color: #fff;
                   border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem; }
   .sync-status { font-size: 0.85rem; margin: 0.4rem 0 1rem; }
+  .details-btn { font-size: 0.72rem; padding: 0.1rem 0.5rem; margin-left: 0.4rem;
+                  background: transparent; border-color: #8886; }
+  .event-detail { font-size: 0.78rem; background: #8881; border-radius: 6px;
+                   padding: 0.5rem 0.7rem; margin: 0.4rem 0 0.6rem; overflow-x: auto;
+                   white-space: pre-wrap; word-break: break-word; }
   code.dns { display: block; background: #8881; padding: 0.5rem 0.7rem; border-radius: 6px;
              font-size: 0.85rem; margin: 0.4rem 0; overflow-x: auto; white-space: pre; }
   .print-only { display: none; }
   @media print {
     .no-print { display: none !important; }
     .print-only { display: block; }
+    .event-detail-panel { display: none !important; }
     body { max-width: 100%; color: #000; }
     .card, .timeline-item { break-inside: avoid; }
     a { color: #000; text-decoration: none; }
+    /* Keep the printable one-pager to one page -- PRINT_TIMELINE_LIMIT
+       in the script below must match this nth-child cutoff (limit + 1). */
+    #timeline-list > .timeline-item:nth-child(n+9) { display: none; }
   }
 </style>
 </head>
@@ -142,7 +151,10 @@ async function api(path, opts) {
 // append_event docstring), so a queued-while-offline event keeps the time
 // it actually happened, exactly like a git commit keeps its author date
 // regardless of when it's later pushed.
+const PRINT_TIMELINE_LIMIT = 8; // keep the printable one-pager to one page
 let currentPassportId = null;
+let currentTimelineRows = [];
+let exportCache = {}; // passport id -> Promise<raw events[]>, fetched lazily on first "Details" click
 
 function outboxKey(id) { return `ovp_outbox_${id}`; }
 function loadOutbox(id) {
@@ -151,6 +163,34 @@ function loadOutbox(id) {
 function saveOutbox(id, items) {
   if (items.length) localStorage.setItem(outboxKey(id), JSON.stringify(items));
   else localStorage.removeItem(outboxKey(id));
+}
+
+// A just-synced event can still be briefly invisible in a fresh GET --
+// Cloudflare KV's list() is only eventually consistent (documented
+// elsewhere in this project: ~15-20s observed lag). Without this, a
+// successful sync would clear the "pending" badge and the very next
+// render (reading straight from the server) could show the event
+// vanishing entirely for a few seconds -- confusing, and easy to mistake
+// for data loss. Bridging that gap client-side: keep the server-echoed
+// event around for a short grace window and merge it into the timeline
+// regardless of whether the server's own GET has caught up yet.
+const RECENT_SYNC_GRACE_MS = 60_000;
+function recentSyncKey(id) { return `ovp_recent_${id}`; }
+function loadRecentSynced(id) {
+  let items;
+  try { items = JSON.parse(localStorage.getItem(recentSyncKey(id))) || []; } catch { items = []; }
+  const fresh = items.filter(item => Date.now() - item.syncedAt < RECENT_SYNC_GRACE_MS);
+  if (fresh.length !== items.length) saveRecentSynced(id, fresh);
+  return fresh;
+}
+function saveRecentSynced(id, items) {
+  if (items.length) localStorage.setItem(recentSyncKey(id), JSON.stringify(items));
+  else localStorage.removeItem(recentSyncKey(id));
+}
+function rememberRecentlySynced(id, ev) {
+  const items = loadRecentSynced(id);
+  items.push({ ev, syncedAt: Date.now() });
+  saveRecentSynced(id, items);
 }
 
 let flushing = false;
@@ -175,6 +215,7 @@ async function flushOutbox(id) {
       changed = true;
       if (r.ok) {
         item.sent = true;
+        rememberRecentlySynced(id, r.body);
       } else {
         item.error = r.body?.error || `HTTP ${r.status}`;
       }
@@ -204,6 +245,51 @@ function discardOutboxItem(id, evId) {
   renderPassport(document.getElementById("app"), id);
 }
 
+async function loadExportEvents(id) {
+  if (!exportCache[id]) {
+    exportCache[id] = (async () => {
+      const resp = await fetch(`/v1/passports/${id}/export`);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      return text.split("\n").filter(Boolean).map(l => JSON.parse(l));
+    })();
+  }
+  return exportCache[id];
+}
+
+async function showEventDetail(id, idx, detailEl, btn) {
+  if (detailEl.dataset.open === "1") {
+    detailEl.dataset.open = "0";
+    detailEl.style.display = "none";
+    btn.textContent = "Details";
+    return;
+  }
+  btn.disabled = true;
+  detailEl.style.display = "block";
+  detailEl.innerHTML = `<p class="qr-caption">Loading…</p>`;
+  try {
+    const row = currentTimelineRows[idx];
+    let raw = row.raw;
+    if (!raw) {
+      // Older, already-server-confirmed rows don't carry the raw event
+      // client-side (the server's own reduced timeline summary doesn't
+      // include the event id -- see ovpf_core.reduce()) -- fetch the
+      // full export once and match on (occurredAt, type), which this
+      // app always makes effectively unique per event.
+      const events = await loadExportEvents(id);
+      const matches = events.filter(e => e.occurredAt === row.at && e.type === row.type);
+      raw = matches.length === 1 ? matches[0] : matches;
+    }
+    detailEl.innerHTML = `<pre class="event-detail">${esc(JSON.stringify(raw, null, 2))}</pre>`;
+    detailEl.dataset.open = "1";
+    btn.textContent = "Hide details";
+  } catch (e) {
+    detailEl.innerHTML = `<p class="error">Could not load details: ${esc(e.message)}</p>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function createPassport() {
   const btn = document.getElementById("create-btn");
   const status = document.getElementById("create-status");
@@ -216,6 +302,91 @@ async function createPassport() {
     return;
   }
   location.href = `/p/${r.body.id}`;
+}
+
+function extractPassportUuid(text) {
+  const m = (text || "").match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+  return m ? m[0] : null;
+}
+
+// --- Camera QR scanning ------------------------------------------------
+// Anyone -- a mechanic mid-job, an enthusiast, a car owner -- should be
+// able to open a *different* car's passport without leaving this site or
+// switching to a separate camera app. Prefers the browser's built-in
+// BarcodeDetector (zero extra bytes, hardware-accelerated); only
+// lazy-loads the vendored jsQR fallback (~130KB) for browsers that lack
+// it, and only once the user actually asks to scan -- most page views
+// never pay for it at all.
+let scanStream = null;
+let scanRAF = null;
+
+function stopScan() {
+  if (scanRAF) cancelAnimationFrame(scanRAF);
+  scanRAF = null;
+  if (scanStream) scanStream.getTracks().forEach(t => t.stop());
+  scanStream = null;
+}
+
+function ensureJsQR() {
+  if (window.jsQR) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "/jsqr.bundle.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("could not load the QR decoder"));
+    document.head.appendChild(s);
+  });
+}
+
+async function startScan(statusEl) {
+  const useNative = "BarcodeDetector" in window;
+  if (!useNative) {
+    statusEl.textContent = "Loading QR decoder…";
+    try { await ensureJsQR(); } catch (e) { statusEl.textContent = e.message; return; }
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+  } catch (e) {
+    statusEl.textContent = `Could not access the camera: ${e.message || e.name}`;
+    return;
+  }
+  scanStream = stream;
+  const video = document.getElementById("scan-video");
+  video.srcObject = stream;
+  await video.play();
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const detector = useNative ? new BarcodeDetector({ formats: ["qr_code"] }) : null;
+  statusEl.textContent = "Point the camera at a passport sticker…";
+
+  const tick = async () => {
+    if (!scanStream) return; // stopped
+    let value = null;
+    try {
+      if (useNative) {
+        const codes = await detector.detect(video);
+        if (codes.length) value = codes[0].rawValue;
+      } else if (video.videoWidth) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = window.jsQR(imageData.data, imageData.width, imageData.height);
+        if (code) value = code.data;
+      }
+    } catch { /* a frame that fails to decode is normal -- just keep trying */ }
+
+    if (value) {
+      const uuid = extractPassportUuid(value);
+      stopScan();
+      if (uuid) { location.href = `/p/${uuid}`; }
+      else { statusEl.textContent = "Scanned a QR code, but it's not a passport link."; }
+      return;
+    }
+    scanRAF = requestAnimationFrame(tick);
+  };
+  tick();
 }
 
 function renderHome(app) {
@@ -232,6 +403,14 @@ function renderHome(app) {
     identity; VIN and everything else gets added later as events (from
     OpenDiag, a verified workshop, or any other producer).</p>
 
+    <h2>Scan a QR code</h2>
+    <button id="scan-btn">Scan a QR code</button>
+    <div id="scan-area" style="display:none">
+      <video id="scan-video" style="width:100%;max-width:360px;border-radius:8px;display:block;margin:0.5rem 0;" playsinline muted></video>
+      <p id="scan-status" class="qr-caption"></p>
+      <button id="scan-cancel-btn">Cancel</button>
+    </div>
+
     <h2>Open an existing passport</h2>
     <p>Lost the sticker or the link? Paste the passport id, or the full URL --
     either works.</p>
@@ -243,13 +422,23 @@ function renderHome(app) {
   document.getElementById("create-btn").onclick = createPassport;
   document.getElementById("open-btn").onclick = () => {
     const status = document.getElementById("open-status");
-    const raw = document.getElementById("open-id").value.trim();
-    const m = raw.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
-    if (!m) { status.textContent = "That doesn't look like a passport id or link."; return; }
-    location.href = `/p/${m[0]}`;
+    const uuid = extractPassportUuid(document.getElementById("open-id").value.trim());
+    if (!uuid) { status.textContent = "That doesn't look like a passport id or link."; return; }
+    location.href = `/p/${uuid}`;
   };
   document.getElementById("open-id").onkeydown = (e) => {
     if (e.key === "Enter") document.getElementById("open-btn").click();
+  };
+  document.getElementById("scan-btn").onclick = () => {
+    document.getElementById("scan-area").style.display = "block";
+    document.getElementById("scan-btn").style.display = "none";
+    startScan(document.getElementById("scan-status"));
+  };
+  document.getElementById("scan-cancel-btn").onclick = () => {
+    stopScan();
+    document.getElementById("scan-area").style.display = "none";
+    document.getElementById("scan-btn").style.display = "inline-block";
+    document.getElementById("scan-status").textContent = "";
   };
 }
 
@@ -287,16 +476,35 @@ async function renderPassport(app, id) {
 
   // Queued-but-not-yet-synced events are folded into the same timeline,
   // sorted alongside confirmed ones -- a pending oil change should show up
-  // right where it happened, not in a separate "drafts" list.
+  // right where it happened, not in a separate "drafts" list. Recently-
+  // synced events (successfully posted, but not necessarily visible in
+  // *this* state yet -- see RECENT_SYNC_GRACE_MS above) are merged in too,
+  // so a just-logged event never appears to vanish while the server's own
+  // read catches up. Server timeline summaries don't carry the event's
+  // id (see ovpf_core.reduce()), so de-duping recent-synced entries once
+  // they do show up server-side matches on (occurredAt, type) instead --
+  // effectively unique in practice, since this UI always sets occurredAt
+  // to the exact millisecond of submission.
   const outbox = loadOutbox(id);
+  const alreadyServerSide = (at, type) =>
+    (state.timeline || []).some(t => t.at === at && t.type === type);
+  const recentSynced = loadRecentSynced(id).filter(item => !alreadyServerSide(item.ev.occurredAt, item.ev.type));
+  saveRecentSynced(id, recentSynced); // prune anything the server now reflects
+
   const outboxTimeline = outbox.map(item => ({
     at: item.ev.occurredAt, type: item.ev.type, producer: item.ev.producer?.name,
-    pending: !item.error, error: item.error, evId: item.ev.id,
+    pending: !item.error, error: item.error, evId: item.ev.id, raw: item.ev,
   }));
-  const combined = [...(state.timeline || []), ...outboxTimeline]
+  const recentTimeline = recentSynced.map(item => ({
+    at: item.ev.occurredAt, type: item.ev.type, producer: item.ev.producer?.name,
+    producerDomain: item.ev.producer?.domain || null, producerVerified: !!item.ev.producer?.verified,
+    evId: item.ev.id, raw: item.ev,
+  }));
+  const combined = [...(state.timeline || []), ...recentTimeline, ...outboxTimeline]
     .slice().sort((a, b) => (a.at || "").localeCompare(b.at || "")).reverse();
+  currentTimelineRows = combined;
 
-  const timeline = combined.map(t => {
+  const timeline = combined.map((t, idx) => {
     let badge = "";
     if (t.error) {
       badge = `<span class="badge-error" title="${esc(t.error)}">⚠ failed</span> ` +
@@ -307,12 +515,14 @@ async function renderPassport(app, id) {
       badge = `<span class="badge-verified" title="Domain-verified producer">✓ ${esc(t.producerDomain)}</span>`;
     }
     return `<div class="timeline-item"><time datetime="${esc(t.at)}" title="${esc(t.at)} (UTC/as recorded)">${fmtTime(t.at)}</time><br>
-     <strong>${esc(t.type)}</strong>${t.producer ? " — " + esc(t.producer) : ""}${badge}</div>`;
+     <strong>${esc(t.type)}</strong>${t.producer ? " — " + esc(t.producer) : ""}${badge}
+     <button class="no-print details-btn" data-idx="${idx}">Details</button>
+     <div class="event-detail-panel" id="detail-${idx}" style="display:none"></div></div>`;
   }).join("") || "<p>No events yet.</p>";
 
   const faults = (state.open_faults || []).map(f =>
     `<li>${esc(f.module)} ${esc(f.code)} — ${esc(f.text)}</li>`
-  ).join("") || "<li>none</li>";
+  ).join("");
 
   const pendingCount = outbox.filter(i => !i.error).length;
   const errorCount = outbox.filter(i => i.error).length;
@@ -335,7 +545,7 @@ async function renderPassport(app, id) {
     <div class="card">
       <div class="field">VIN</div><div>${esc(v.vin) || "(not set)"}</div>
       <div class="field">Mileage</div><div>${mileage}</div>
-      <div class="field">Open faults</div><ul>${faults}</ul>
+      ${faults ? `<div class="field">Open faults</div><ul>${faults}</ul>` : ""}
     </div>
     <div class="qr-box"><canvas id="qr"></canvas></div>
     <div class="qr-caption">passport sticker (scan to open this page)</div>
@@ -382,7 +592,10 @@ async function renderPassport(app, id) {
       <button id="verify-integrity-btn">Verify history integrity</button>
       <span id="verify-integrity-result" class="qr-caption"></span>
     </p>
-    ${timeline}
+    <div id="timeline-list">${timeline}</div>
+    <p class="print-only qr-caption">${combined.length > PRINT_TIMELINE_LIMIT
+      ? `Showing the latest ${PRINT_TIMELINE_LIMIT} of ${combined.length} events -- full history at ${esc(location.href)}.`
+      : ""}</p>
     <p class="no-print"><a class="export" href="/v1/passports/${id}/export">Export raw NDJSON</a></p>
   `;
 
@@ -414,6 +627,12 @@ async function renderPassport(app, id) {
       if (confirm("Discard this event? It was never sent to the provider, and this can't be undone.")) {
         discardOutboxItem(id, btn.dataset.evid);
       }
+    };
+  });
+  document.querySelectorAll(".details-btn").forEach(btn => {
+    btn.onclick = () => {
+      const idx = Number(btn.dataset.idx);
+      showEventDetail(id, idx, document.getElementById(`detail-${idx}`), btn);
     };
   });
 
@@ -654,6 +873,44 @@ function renderMechanicSecretReveal(app, domain, mechanicName, mechanicSecret) {
   document.getElementById("mech-continue-btn").onclick = () => renderWorkshopStatus(app, domain);
 }
 
+function renderSecretResetChallenge(app, domain, w, challenge) {
+  app.innerHTML = `
+    <h1>Reset the workshop's own secret</h1>
+    <p>Add this DNS TXT record -- separate from the permanent verification
+    one -- then confirm. This proves you can write to this domain's DNS
+    <em>right now</em>, not just that it was verified at some point in the
+    past (a permanent record could otherwise be replayed by anyone who
+    simply reads it back off this site).</p>
+    <code class="dns">Type:  TXT
+Name:  ${esc(challenge.dnsRecord.name)}
+Value: ${esc(challenge.dnsRecord.value)}</code>
+    <button id="reset-confirm-btn">I've added it -- confirm</button>
+    <p id="reset-confirm-status" class="error"></p>
+    <p><a href="#" id="reset-cancel-link">Cancel</a></p>
+  `;
+  document.getElementById("reset-confirm-btn").onclick = async () => {
+    const status = document.getElementById("reset-confirm-status");
+    const btn = document.getElementById("reset-confirm-btn");
+    btn.disabled = true;
+    status.textContent = "Checking DNS…";
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/secret/reset/confirm`, { method: "POST" });
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; btn.disabled = false; return; }
+    if (!rr.body.workshopSecret) {
+      status.textContent = rr.body.error
+        ? `DNS check failed: ${rr.body.error}`
+        : `Not found yet (saw: ${JSON.stringify(rr.body.found || [])}). DNS can take a few minutes to propagate -- try again shortly.`;
+      btn.disabled = false;
+      return;
+    }
+    setWorkshopSession(w.domain, rr.body.workshopSecret, { role: "workshop", name: w.name });
+    renderWorkshopSecretReveal(app, { ...w, workshopSecret: rr.body.workshopSecret });
+  };
+  document.getElementById("reset-cancel-link").onclick = (e) => {
+    e.preventDefault();
+    renderWorkshopStatus(app, domain);
+  };
+}
+
 async function renderWorkshopStatus(app, domain) {
   app.innerHTML = "Loading…";
   const r = await api(`/v1/workshops/${encodeURIComponent(domain)}`);
@@ -795,11 +1052,9 @@ Value: ${esc(w.dnsRecord.value)}</code>
   const resetLink = document.getElementById("ws-reset-link");
   if (resetLink) resetLink.onclick = async (e) => {
     e.preventDefault();
-    if (!confirm("Reset the workshop's own secret? This needs the DNS TXT record to still be in place, and invalidates the old one immediately (mechanic secrets are unaffected).")) return;
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/secret/reset`, { method: "POST" });
-    if (!rr.ok) { alert(`Could not reset: ${rr.body?.error || rr.status}`); return; }
-    setWorkshopSession(w.domain, rr.body.workshopSecret, { role: "workshop", name: w.name });
-    renderWorkshopSecretReveal(app, { ...w, workshopSecret: rr.body.workshopSecret });
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/secret/reset/start`, { method: "POST" });
+    if (!rr.ok) { alert(`Could not start reset: ${rr.body?.error || rr.status}`); return; }
+    renderSecretResetChallenge(app, domain, w, rr.body);
   };
 
   const addBtn = document.getElementById("ws-mech-add-btn");
