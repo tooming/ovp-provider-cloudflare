@@ -24,11 +24,39 @@
 <div id="app">Loading…</div>
 
 <script>
+async function createPassport() {
+  const btn = document.getElementById("create-btn");
+  const status = document.getElementById("create-status");
+  btn.disabled = true;
+  status.textContent = "Creating…";
+  try {
+    const resp = await fetch("/v1/passports", { method: "POST" });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+    location.href = `/p/${body.id}`;
+  } catch (e) {
+    status.textContent = `Could not create a passport: ${e}`;
+    btn.disabled = false;
+  }
+}
+
 async function main() {
   const app = document.getElementById("app");
   const m = location.pathname.match(/\/p\/([0-9a-fA-F-]{36})/);
   if (!m) {
-    app.innerHTML = "<p class='error'>No passport id in URL. Expected /p/&lt;uuid&gt;.</p>";
+    // No uuid in the URL at all -- offer to mint one right here, so this
+    // provider's own website is a real entry point, not just a viewer
+    // for passports created elsewhere (the desktop app, curl, etc).
+    app.innerHTML = `
+      <h1>Open Vehicle Passport</h1>
+      <p>No passport id in the URL. Scan a sticker (<code>/p/&lt;uuid&gt;</code>),
+      or create a new passport with this provider:</p>
+      <button id="create-btn">Create a new passport</button>
+      <p id="create-status" class="error"></p>
+      <p>A fresh passport has no vehicle data yet -- the id itself is the
+      identity; VIN and everything else gets added later as events (from
+      OpenDiag, or any other producer).</p>`;
+    document.getElementById("create-btn").onclick = createPassport;
     return;
   }
   const id = m[1];
