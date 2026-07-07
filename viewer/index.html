@@ -31,6 +31,11 @@
   nav a { margin-right: 1rem; }
   .badge-verified { display: inline-block; font-size: 0.72rem; background: #1a7f37; color: #fff;
                      border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem; }
+  .badge-pending { display: inline-block; font-size: 0.72rem; background: #8a6d00; color: #fff;
+                    border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem; }
+  .badge-error { display: inline-block; font-size: 0.72rem; background: #c0392b; color: #fff;
+                  border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem; }
+  .sync-status { font-size: 0.85rem; margin: 0.4rem 0 1rem; }
   code.dns { display: block; background: #8881; padding: 0.5rem 0.7rem; border-radius: 6px;
              font-size: 0.85rem; margin: 0.4rem 0; overflow-x: auto; white-space: pre; }
   .print-only { display: none; }
@@ -124,6 +129,77 @@ async function api(path, opts) {
   return { ok: resp.ok, status: resp.status, body };
 }
 
+// --- Local-first outbox --------------------------------------------------
+// Every event is written here FIRST, rendered immediately, then sent in the
+// background -- same shape as the desktop app's local-vs-cloud model (see
+// docs/ARCHITECTURE.md). recordedAt is set at enqueue time (this browser's
+// local log), not at server-sync time -- that's correct, not a bug: the
+// provider never overwrites a producer-set recordedAt (see app.py's
+// append_event docstring), so a queued-while-offline event keeps the time
+// it actually happened, exactly like a git commit keeps its author date
+// regardless of when it's later pushed.
+let currentPassportId = null;
+
+function outboxKey(id) { return `ovp_outbox_${id}`; }
+function loadOutbox(id) {
+  try { return JSON.parse(localStorage.getItem(outboxKey(id))) || []; } catch { return []; }
+}
+function saveOutbox(id, items) {
+  if (items.length) localStorage.setItem(outboxKey(id), JSON.stringify(items));
+  else localStorage.removeItem(outboxKey(id));
+}
+
+let flushing = false;
+async function flushOutbox(id) {
+  if (flushing) return;
+  flushing = true;
+  try {
+    const outbox = loadOutbox(id);
+    let changed = false;
+    for (const item of outbox) {
+      if (item.error) continue; // needs a manual discard, not auto-retried forever
+      let r;
+      try {
+        r = await api(`/v1/passports/${id}/events`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...(item.headers || {}) },
+          body: JSON.stringify(item.ev),
+        });
+      } catch {
+        break; // offline (fetch itself threw) -- stop, leave the rest queued
+      }
+      changed = true;
+      if (r.ok) {
+        item.sent = true;
+      } else {
+        item.error = r.body?.error || `HTTP ${r.status}`;
+      }
+    }
+    const remaining = outbox.filter(item => !item.sent);
+    saveOutbox(id, remaining);
+    if (changed && currentPassportId === id) {
+      renderPassport(document.getElementById("app"), id);
+    }
+  } finally {
+    flushing = false;
+  }
+}
+
+window.addEventListener("online", () => { if (currentPassportId) flushOutbox(currentPassportId); });
+
+async function enqueueEvent(id, ev, headers) {
+  const outbox = loadOutbox(id);
+  outbox.push({ ev, headers: headers || {} });
+  saveOutbox(id, outbox);
+  await renderPassport(document.getElementById("app"), id);
+  flushOutbox(id);
+}
+
+function discardOutboxItem(id, evId) {
+  saveOutbox(id, loadOutbox(id).filter(item => item.ev.id !== evId));
+  renderPassport(document.getElementById("app"), id);
+}
+
 async function createPassport() {
   const btn = document.getElementById("create-btn");
   const status = document.getElementById("create-status");
@@ -155,23 +231,58 @@ function renderHome(app) {
 }
 
 async function renderPassport(app, id) {
-  const r = await api(`/v1/passports/${id}`);
-  if (r.status === 404) {
-    app.innerHTML = "<p class='error'>No such passport on this provider.</p>";
-    return;
+  currentPassportId = id;
+  const cacheKey = `ovp_state_${id}`;
+  let state, offlineLoad = false;
+  try {
+    const r = await api(`/v1/passports/${id}`);
+    if (r.status === 404) {
+      app.innerHTML = "<p class='error'>No such passport on this provider.</p>";
+      return;
+    }
+    if (!r.ok) {
+      app.innerHTML = `<p class="error">Could not load passport: HTTP ${r.status}</p>`;
+      return;
+    }
+    state = r.body;
+    localStorage.setItem(cacheKey, JSON.stringify(state));
+  } catch {
+    // Offline and the very fetch() threw -- fall back to the last copy this
+    // browser saw, so the page (and any queued events) still render instead
+    // of a blank error. This is the local-first promise: the provider is an
+    // origin to sync with, not something the page depends on to exist.
+    try { state = JSON.parse(localStorage.getItem(cacheKey)); } catch { state = null; }
+    if (!state) {
+      app.innerHTML = "<p class='error'>Offline, and no cached copy of this passport in this browser yet.</p>";
+      return;
+    }
+    offlineLoad = true;
   }
-  if (!r.ok) {
-    app.innerHTML = `<p class="error">Could not load passport: HTTP ${r.status}</p>`;
-    return;
-  }
-  const state = r.body;
   const v = state.vehicle || {};
   const desc = [v.modelYear, v.make, v.model].filter(Boolean).map(esc).join(" ");
   const mileage = state.mileage ? `${esc(state.mileage.value)} ${esc(state.mileage.unit)}` : "unknown";
 
-  const timeline = (state.timeline || []).slice().reverse().map(t => {
-    const badge = t.producerVerified
-      ? `<span class="badge-verified" title="Domain-verified producer">✓ ${esc(t.producerDomain)}</span>` : "";
+  // Queued-but-not-yet-synced events are folded into the same timeline,
+  // sorted alongside confirmed ones -- a pending oil change should show up
+  // right where it happened, not in a separate "drafts" list.
+  const outbox = loadOutbox(id);
+  const outboxTimeline = outbox.map(item => ({
+    at: item.ev.occurredAt, type: item.ev.type, producer: item.ev.producer?.name,
+    pending: !item.error, error: item.error, evId: item.ev.id,
+  }));
+  const combined = [...(state.timeline || []), ...outboxTimeline]
+    .slice().sort((a, b) => (a.at || "").localeCompare(b.at || "")).reverse();
+
+  const timeline = combined.map(t => {
+    let badge = "";
+    if (t.error) {
+      badge = `<span class="badge-error" title="${esc(t.error)}">⚠ failed</span> ` +
+        `<button class="no-print discard-btn" data-evid="${esc(t.evId)}">Discard</button>`;
+    } else if (t.pending) {
+      badge = `<span class="badge-pending" title="Saved in this browser, not yet sent to the provider">⟳ pending</span>`;
+    } else if (t.producerVerified) {
+      badge = `<span class="badge-verified" title="Domain-verified producer">✓ ${esc(t.producerDomain)}</span>`;
+    }
     return `<div class="timeline-item"><time datetime="${esc(t.at)}" title="${esc(t.at)} (UTC/as recorded)">${fmtTime(t.at)}</time><br>
      <strong>${esc(t.type)}</strong>${t.producer ? " — " + esc(t.producer) : ""}${badge}</div>`;
   }).join("") || "<p>No events yet.</p>";
@@ -180,8 +291,23 @@ async function renderPassport(app, id) {
     `<li>${esc(f.module)} ${esc(f.code)} — ${esc(f.text)}</li>`
   ).join("") || "<li>none</li>";
 
+  const pendingCount = outbox.filter(i => !i.error).length;
+  const errorCount = outbox.filter(i => i.error).length;
+  // offlineLoad and pendingCount are independent facts -- being offline
+  // right now doesn't mean there's nothing queued, and that's exactly the
+  // "3 commits ahead, can't reach origin" case this status line is for.
+  let syncStatus;
+  if (errorCount) syncStatus = `⚠ ${errorCount} event(s) failed to sync. <button id="sync-now-btn">Retry</button>`;
+  else if (offlineLoad && pendingCount) syncStatus = `⚠ Offline — ${pendingCount} pending. ` +
+    `<button id="sync-now-btn">Try syncing now</button>`;
+  else if (offlineLoad) syncStatus = `⚠ Offline — showing the last copy this browser saved.`;
+  else if (pendingCount) syncStatus = `⟳ ${pendingCount} pending — ` +
+    `${navigator.onLine ? "syncing…" : "will sync when back online"} <button id="sync-now-btn">Sync now</button>`;
+  else syncStatus = `✓ Synced`;
+
   app.innerHTML = `
     <h1>${desc || "Vehicle passport"}</h1>
+    <p id="sync-status" class="sync-status no-print">${syncStatus}</p>
     <p class="print-only qr-caption">Printed ${fmtTime(new Date().toISOString())} &mdash; full history: ${esc(location.href)}</p>
     <div class="card">
       <div class="field">VIN</div><div>${esc(v.vin) || "(not set)"}</div>
@@ -244,6 +370,24 @@ async function renderPassport(app, id) {
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
   document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
 
+  const syncNowBtn = document.getElementById("sync-now-btn");
+  if (syncNowBtn) syncNowBtn.onclick = () => {
+    syncNowBtn.disabled = true;
+    // Clear any prior failures too -- "Retry" and "Sync now" are the same
+    // action: attempt every queued event again right now.
+    const items = loadOutbox(id);
+    items.forEach(item => delete item.error);
+    saveOutbox(id, items);
+    flushOutbox(id);
+  };
+  document.querySelectorAll(".discard-btn").forEach(btn => {
+    btn.onclick = () => {
+      if (confirm("Discard this event? It was never sent to the provider, and this can't be undone.")) {
+        discardOutboxItem(id, btn.dataset.evid);
+      }
+    };
+  });
+
   // If this browser is signed in as a workshop, default the domain field
   // to it -- one less thing to type every time you log real work.
   const session = getWorkshopSession();
@@ -252,6 +396,10 @@ async function renderPassport(app, id) {
     document.getElementById("log-session-hint").textContent =
       `Signed in as ${session.domain} in this browser -- events logged with this domain will be verified automatically.`;
   }
+
+  // A page load is also a sync opportunity -- e.g. events queued last time
+  // this browser was offline, on a passport reopened after reconnecting.
+  if (!offlineLoad && pendingCount) flushOutbox(id);
 }
 
 function envelope(vehicleId, type, data, producer) {
@@ -268,19 +416,6 @@ function envelope(vehicleId, type, data, producer) {
   };
 }
 
-async function postEvent(id, ev, statusEl, extraHeaders) {
-  const r = await api(`/v1/passports/${id}/events`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...(extraHeaders || {}) },
-    body: JSON.stringify(ev),
-  });
-  if (!r.ok) {
-    statusEl.textContent = `Error: ${r.body?.error || r.status}`;
-    return false;
-  }
-  return true;
-}
-
 async function submitVehicleInfo(id) {
   const status = document.getElementById("edit-status");
   const facts = {
@@ -293,7 +428,7 @@ async function submitVehicleInfo(id) {
   const vehicle = { type: "Vehicle" };
   for (const [k, val] of Object.entries(facts)) if (val) vehicle[k] = val;
   const ev = envelope(id, "VehicleIdentified", { vehicle }, { type: "Manual", name: "web" });
-  if (await postEvent(id, ev, status)) renderPassport(document.getElementById("app"), id);
+  await enqueueEvent(id, ev);
 }
 
 async function submitLogEvent(id, currentVehicle) {
@@ -324,7 +459,7 @@ async function submitLogEvent(id, currentVehicle) {
   const session = getWorkshopSession();
   const headers = (domain && session && session.domain === domain)
     ? { authorization: `Bearer ${session.secret}` } : {};
-  if (await postEvent(id, ev, status, headers)) renderPassport(document.getElementById("app"), id);
+  await enqueueEvent(id, ev, headers);
 }
 
 // --- Workshop registration + DNS verification ------------------------------
