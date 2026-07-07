@@ -28,13 +28,19 @@ including that exact edge case.
 ## API
 
 Same contract as `ovp-provider-aws` -- same routes, same write-token
-model, same recordedAt-is-immutable rule:
+model (currently unenforced, see below), same recordedAt-is-immutable
+rule:
 
 | Method | Path                          | Auth                        |
 |--------|-------------------------------|------------------------------|
 | POST   | `/v1/passports`                | none (mints id + writeToken) |
 | GET    | `/v1/passports/{id}`           | none -- the id is the read capability |
-| POST   | `/v1/passports/{id}/events`    | `Authorization: Bearer <writeToken>` |
+| POST   | `/v1/passports/{id}/events`    | none right now -- see below |
+
+**POC MODE: write access is currently unauthenticated**, matching
+`ovp-provider-aws`. `createPassport` still mints and returns a
+`writeToken`; `appendEvent` doesn't check it yet. Deliberate, temporary
+simplification for easier POCing -- not the intended posture.
 | GET    | `/v1/passports/{id}/export`    | none |
 
 ## Storage

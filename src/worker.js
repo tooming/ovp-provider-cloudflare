@@ -92,11 +92,11 @@ async function appendEvent(request, env, id) {
   const meta = await getMeta(env, id);
   if (!meta) return json({ error: "no such passport" }, 404);
 
-  const auth = request.headers.get("authorization") || "";
-  const token = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7) : "";
-  if (!token || (await tokenHash(token)) !== meta.writeTokenHash) {
-    return json({ error: "missing or invalid write token" }, 403);
-  }
+  // POC MODE: write-token possession is NOT enforced right now, matching
+  // ovp-provider-aws's app.py -- anyone who can reach this passport id can
+  // append to it. The token is still minted at creation so re-enabling
+  // enforcement later is a few lines here, not an API reshape. See
+  // README's Auth section.
 
   let ev;
   try {
