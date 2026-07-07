@@ -76,6 +76,102 @@ async function createPassport(request, env) {
   return json({ id, readUrl: `/v1/passports/${id}` }, 201);
 }
 
+function workshopKey(domain) {
+  return `WORKSHOP#${(domain || "").trim().toLowerCase().replace(/\.+$/, "")}`;
+}
+
+async function getWorkshop(env, domain) {
+  const v = await env.PASSPORTS.get(workshopKey(domain));
+  return v ? JSON.parse(v) : null;
+}
+
+function workshopView(item) {
+  return {
+    domain: item.domain,
+    name: item.name,
+    verified: !!item.verified,
+    verifiedAt: item.verifiedAt || null,
+    verificationToken: item.verificationToken,
+    dnsRecord: {
+      type: "TXT",
+      name: `_ovp-verify.${item.domain}`,
+      value: `ovp-verify=${item.verificationToken}`,
+    },
+  };
+}
+
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function dnsTxtLookup(name) {
+  // DNS-over-HTTPS (Cloudflare's own public resolver) -- same approach as
+  // app.py's urllib version, just via fetch() here. No DNS library needed
+  // on either provider.
+  const resp = await fetch(
+    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=TXT`,
+    { headers: { accept: "application/dns-json" } });
+  const data = await resp.json();
+  const answers = data.Answer || [];
+  return answers.filter(a => a.type === 16).map(a => a.data.replace(/^"|"$/g, ""));
+}
+
+async function registerWorkshop(request, env) {
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+
+  const domain = (body.domain || "").trim().toLowerCase().replace(/\.+$/, "");
+  if (!domain || !domain.includes(".")) {
+    return json({ error: 'domain required, e.g. "skoor.ee"' }, 400);
+  }
+
+  const existing = await getWorkshop(env, domain);
+  if (existing) return json(workshopView(existing), 200);
+
+  const item = {
+    domain, name: body.name || domain,
+    verificationToken: randomToken(),
+    verified: false, createdAt: new Date().toISOString(),
+  };
+  await env.PASSPORTS.put(workshopKey(domain), JSON.stringify(item));
+  return json(workshopView(item), 201);
+}
+
+async function readWorkshop(request, env, domain) {
+  const item = await getWorkshop(env, domain);
+  if (!item) return json({ error: "no such workshop registered" }, 404);
+  return json(workshopView(item));
+}
+
+async function verifyWorkshop(request, env, domain) {
+  const item = await getWorkshop(env, domain);
+  if (!item) return json({ error: "no such workshop registered" }, 404);
+  if (item.verified) return json(workshopView(item));
+
+  const expected = `ovp-verify=${item.verificationToken}`;
+  let found;
+  try {
+    found = await dnsTxtLookup(`_ovp-verify.${item.domain}`);
+  } catch (e) {
+    return json({ ...workshopView(item), checkError: String(e) });
+  }
+
+  if (!found.includes(expected)) {
+    return json({ ...workshopView(item), found });
+  }
+
+  item.verified = true;
+  item.verifiedAt = new Date().toISOString();
+  await env.PASSPORTS.put(workshopKey(domain), JSON.stringify(item));
+  return json(workshopView(item));
+}
+
 async function appendEvent(request, env, id) {
   const meta = await getMeta(env, id);
   if (!meta) return json({ error: "no such passport" }, 404);
@@ -93,6 +189,23 @@ async function appendEvent(request, env, id) {
   const required = ["@context", "id", "type", "specVersion", "vehicle", "occurredAt", "recordedAt", "producer", "data"];
   const missing = required.filter(k => !(k in ev));
   if (missing.length) return json({ error: `missing required field(s): ${missing}` }, 400);
+
+  // Server-side provenance stamping (see docs/TRUST.md) -- matches
+  // app.py exactly: a client's producer.verified claim is stripped and
+  // only re-added here, from this provider's own workshop registry, at
+  // write time. Baked into the hash immediately, so a workshop losing
+  // verified status later doesn't retroactively change what it attested.
+  const producer = ev.producer || {};
+  delete producer.verified;
+  delete producer.verifiedAt;
+  if (producer.domain) {
+    const workshop = await getWorkshop(env, producer.domain);
+    if (workshop && workshop.verified) {
+      producer.verified = true;
+      producer.verifiedAt = workshop.verifiedAt;
+    }
+  }
+  ev.producer = producer;
 
   // recordedAt is producer-set, immutable -- same contract as app.py.
   const existing = await loadEvents(env, id);
@@ -139,6 +252,14 @@ export default {
 
     m = path.match(/^\/v1\/passports\/([^/]+)$/);
     if (m && method === "GET") return readPassport(request, env, m[1]);
+
+    if (method === "POST" && path === "/v1/workshops") return registerWorkshop(request, env);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/verify$/);
+    if (m && method === "POST") return verifyWorkshop(request, env, m[1]);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)$/);
+    if (m && method === "GET") return readWorkshop(request, env, m[1]);
 
     return json({ error: "no such route" }, 404);
   },

@@ -20,9 +20,23 @@
   a.export { font-size: 0.85rem; }
   .qr-box { background: #fff; border-radius: 8px; padding: 8px; display: inline-block; }
   .qr-caption { font-size: 0.8rem; color: #666; margin-top: 0.3rem; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin: 0.4rem 0; }
+  .row input, .row select { font: inherit; padding: 0.35rem 0.5rem; border: 1px solid #8886;
+                             border-radius: 6px; background: transparent; color: inherit; }
+  .row input[type=text], .row input:not([type]) { flex: 1; min-width: 140px; }
+  button { font: inherit; padding: 0.35rem 0.9rem; border-radius: 6px; border: 1px solid #8886;
+           background: #4a90d9; color: #fff; cursor: pointer; }
+  button:disabled { opacity: 0.6; cursor: default; }
+  nav { font-size: 0.85rem; margin-bottom: 1rem; }
+  nav a { margin-right: 1rem; }
+  .badge-verified { display: inline-block; font-size: 0.72rem; background: #1a7f37; color: #fff;
+                     border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem; }
+  code.dns { display: block; background: #8881; padding: 0.5rem 0.7rem; border-radius: 6px;
+             font-size: 0.85rem; margin: 0.4rem 0; overflow-x: auto; white-space: pre; }
 </style>
 </head>
 <body>
+<nav><a href="/">Passport home</a><a href="/workshop">Register a workshop</a></nav>
 <div id="app">Loading…</div>
 
 <script>
@@ -41,92 +55,131 @@ Minimum version required to store current data is: `+i+`.
 `);let s=Mn(t,e,o),u=et.getSymbolSize(t),c=new pn(u);return Bn(c,t),An(c),Tn(c,t),Bt(c,e,0),t>=7&&In(c,t),Nn(c,s),isNaN(r)&&(r=At.getBestMask(c,Bt.bind(null,c,e))),At.applyMask(r,c),Bt(c,e,r),{modules:c,version:t,errorCorrectionLevel:e,maskPattern:r,segments:o}}Te.create=function(t,e){if(typeof t>"u"||t==="")throw new Error("No input text");let r=Et.M,o,i;return typeof e<"u"&&(r=Et.from(e.errorCorrectionLevel,Et.M),o=tt.from(e.version),i=At.from(e.maskPattern),e.toSJISFunc&&et.setToSJISFunction(e.toSJISFunc)),Pn(t,o,r,i)}});var It=d(L=>{function Ne(n){if(typeof n=="number"&&(n=n.toString()),typeof n!="string")throw new Error("Color should be defined as hex string");let t=n.slice().replace("#","").split("");if(t.length<3||t.length===5||t.length>8)throw new Error("Invalid hex color: "+n);(t.length===3||t.length===4)&&(t=Array.prototype.concat.apply([],t.map(function(r){return[r,r]}))),t.length===6&&t.push("F","F");let e=parseInt(t.join(""),16);return{r:e>>24&255,g:e>>16&255,b:e>>8&255,a:e&255,hex:"#"+t.slice(0,6).join("")}}L.getOptions=function(t){t||(t={}),t.color||(t.color={});let e=typeof t.margin>"u"||t.margin===null||t.margin<0?4:t.margin,r=t.width&&t.width>=21?t.width:void 0,o=t.scale||4;return{width:r,scale:r?4:o,margin:e,color:{dark:Ne(t.color.dark||"#000000ff"),light:Ne(t.color.light||"#ffffffff")},type:t.type,rendererOpts:t.rendererOpts||{}}};L.getScale=function(t,e){return e.width&&e.width>=t+e.margin*2?e.width/(t+e.margin*2):e.scale};L.getImageWidth=function(t,e){let r=L.getScale(t,e);return Math.floor((t+e.margin*2)*r)};L.qrToImageData=function(t,e,r){let o=e.modules.size,i=e.modules.data,s=L.getScale(o,r),u=Math.floor((o+r.margin*2)*s),c=r.margin*s,l=[r.color.light,r.color.dark];for(let a=0;a<u;a++)for(let w=0;w<u;w++){let h=(a*u+w)*4,y=r.color.light;if(a>=c&&w>=c&&a<u-c&&w<u-c){let A=Math.floor((a-c)/s),T=Math.floor((w-c)/s);y=l[i[A*o+T]?1:0]}t[h++]=y.r,t[h++]=y.g,t[h++]=y.b,t[h]=y.a}}});var Me=d(nt=>{var Nt=It();function bn(n,t,e){n.clearRect(0,0,t.width,t.height),t.style||(t.style={}),t.height=e,t.width=e,t.style.height=e+"px",t.style.width=e+"px"}function Rn(){try{return document.createElement("canvas")}catch{throw new Error("You need to specify a canvas element")}}nt.render=function(t,e,r){let o=r,i=e;typeof o>"u"&&(!e||!e.getContext)&&(o=e,e=void 0),e||(i=Rn()),o=Nt.getOptions(o);let s=Nt.getImageWidth(t.modules.size,o),u=i.getContext("2d"),c=u.createImageData(s,s);return Nt.qrToImageData(c.data,t,o),bn(u,i,s),u.putImageData(c,0,0),i};nt.renderToDataURL=function(t,e,r){let o=r;typeof o>"u"&&(!e||!e.getContext)&&(o=e,e=void 0),o||(o={});let i=nt.render(t,e,o),s=o.type||"image/png",u=o.rendererOpts||{};return i.toDataURL(s,u.quality)}});var be=d(Pe=>{var Ln=It();function Se(n,t){let e=n.a/255,r=t+'="'+n.hex+'"';return e<1?r+" "+t+'-opacity="'+e.toFixed(2).slice(1)+'"':r}function Mt(n,t,e){let r=n+t;return typeof e<"u"&&(r+=" "+e),r}function _n(n,t,e){let r="",o=0,i=!1,s=0;for(let u=0;u<n.length;u++){let c=Math.floor(u%t),l=Math.floor(u/t);!c&&!i&&(i=!0),n[u]?(s++,u>0&&c>0&&n[u-1]||(r+=i?Mt("M",c+e,.5+l+e):Mt("m",o,0),o=0,i=!1),c+1<t&&n[u+1]||(r+=Mt("h",s),s=0)):o++}return r}Pe.render=function(t,e,r){let o=Ln.getOptions(e),i=t.modules.size,s=t.modules.data,u=i+o.margin*2,c=o.color.light.a?"<path "+Se(o.color.light,"fill")+' d="M0 0h'+u+"v"+u+'H0z"/>':"",l="<path "+Se(o.color.dark,"stroke")+' d="'+_n(s,i,o.margin)+'"/>',a='viewBox="0 0 '+u+" "+u+'"',h='<svg xmlns="http://www.w3.org/2000/svg" '+(o.width?'width="'+o.width+'" height="'+o.width+'" ':"")+a+' shape-rendering="crispEdges">'+c+l+`</svg>
 `;return typeof r=="function"&&r(null,h),h}});var Le=d(O=>{var xn=xt(),St=Ie(),Re=Me(),Un=be();function Pt(n,t,e,r,o){let i=[].slice.call(arguments,1),s=i.length,u=typeof i[s-1]=="function";if(!u&&!xn())throw new Error("Callback required as last argument");if(u){if(s<2)throw new Error("Too few arguments provided");s===2?(o=e,e=t,t=r=void 0):s===3&&(t.getContext&&typeof o>"u"?(o=r,r=void 0):(o=r,r=e,e=t,t=void 0))}else{if(s<1)throw new Error("Too few arguments provided");return s===1?(e=t,t=r=void 0):s===2&&!t.getContext&&(r=e,e=t,t=void 0),new Promise(function(c,l){try{let a=St.create(e,r);c(n(a,t,r))}catch(a){l(a)}})}try{let c=St.create(e,r);o(null,n(c,t,r))}catch(c){o(c)}}O.create=St.create;O.toCanvas=Pt.bind(null,Re.render);O.toDataURL=Pt.bind(null,Re.renderToDataURL);O.toString=Pt.bind(null,function(n,t,e){return Un.render(n,e)})});var qn=d(()=>{var _e=Ve(Le());window.QRCode=_e.default});qn();})();</script>
 <script>
+// Every value below can originate from an *event*, and POC mode has no
+// write access control (see app.py/worker.js module docstrings) -- so
+// anyone can append an event containing HTML/script in a text field.
+// Escape everything interpolated into innerHTML that isn't a value this
+// script itself produced (a uuid regex match, a fixed label).
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// occurredAt/recordedAt/verifiedAt are always UTC (Z) or an explicit
+// offset on the wire -- Date parses that correctly, and toLocaleString
+// renders it in whichever timezone the browser itself is set to.
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return esc(iso);
+  return esc(d.toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  }));
+}
+
+async function api(path, opts) {
+  const resp = await fetch(path, opts);
+  let body = null;
+  try { body = await resp.json(); } catch { /* non-JSON body (export) */ }
+  return { ok: resp.ok, status: resp.status, body };
+}
+
 async function createPassport() {
   const btn = document.getElementById("create-btn");
   const status = document.getElementById("create-status");
   btn.disabled = true;
   status.textContent = "Creating…";
-  try {
-    const resp = await fetch("/v1/passports", { method: "POST" });
-    const body = await resp.json();
-    if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
-    location.href = `/p/${body.id}`;
-  } catch (e) {
-    status.textContent = `Could not create a passport: ${e}`;
+  const r = await api("/v1/passports", { method: "POST" });
+  if (!r.ok) {
+    status.textContent = `Could not create a passport: ${r.body?.error || r.status}`;
     btn.disabled = false;
+    return;
   }
+  location.href = `/p/${r.body.id}`;
 }
 
-async function main() {
-  const app = document.getElementById("app");
-  const m = location.pathname.match(/\/p\/([0-9a-fA-F-]{36})/);
-  if (!m) {
-    // No uuid in the URL at all -- offer to mint one right here, so this
-    // provider's own website is a real entry point, not just a viewer
-    // for passports created elsewhere (the desktop app, curl, etc).
-    app.innerHTML = `
-      <h1>Open Vehicle Passport</h1>
-      <p>No passport id in the URL. Scan a sticker (<code>/p/&lt;uuid&gt;</code>),
-      or create a new passport with this provider:</p>
-      <button id="create-btn">Create a new passport</button>
-      <p id="create-status" class="error"></p>
-      <p>A fresh passport has no vehicle data yet -- the id itself is the
-      identity; VIN and everything else gets added later as events (from
-      OpenDiag, or any other producer).</p>`;
-    document.getElementById("create-btn").onclick = createPassport;
+function renderHome(app) {
+  // No uuid in the URL at all -- offer to mint one right here, so this
+  // provider's own website is a real entry point, not just a viewer
+  // for passports created elsewhere (the desktop app, curl, etc).
+  app.innerHTML = `
+    <h1>Open Vehicle Passport</h1>
+    <p>No passport id in the URL. Scan a sticker (<code>/p/&lt;uuid&gt;</code>),
+    or create a new passport with this provider:</p>
+    <button id="create-btn">Create a new passport</button>
+    <p id="create-status" class="error"></p>
+    <p>A fresh passport has no vehicle data yet -- the id itself is the
+    identity; VIN and everything else gets added later as events (from
+    OpenDiag, a verified workshop, or any other producer).</p>`;
+  document.getElementById("create-btn").onclick = createPassport;
+}
+
+async function renderPassport(app, id) {
+  const r = await api(`/v1/passports/${id}`);
+  if (r.status === 404) {
+    app.innerHTML = "<p class='error'>No such passport on this provider.</p>";
     return;
   }
-  const id = m[1];
-
-  let state;
-  try {
-    const resp = await fetch(`/v1/passports/${id}`);
-    if (resp.status === 404) {
-      app.innerHTML = "<p class='error'>No such passport on this provider.</p>";
-      return;
-    }
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    state = await resp.json();
-  } catch (e) {
-    app.innerHTML = `<p class="error">Could not load passport: ${e}</p>`;
+  if (!r.ok) {
+    app.innerHTML = `<p class="error">Could not load passport: HTTP ${r.status}</p>`;
     return;
   }
-
+  const state = r.body;
   const v = state.vehicle || {};
-  const desc = [v.modelYear, v.make, v.model].filter(Boolean).join(" ");
-  const mileage = state.mileage ? `${state.mileage.value} ${state.mileage.unit}` : "unknown";
+  const desc = [v.modelYear, v.make, v.model].filter(Boolean).map(esc).join(" ");
+  const mileage = state.mileage ? `${esc(state.mileage.value)} ${esc(state.mileage.unit)}` : "unknown";
 
-  // occurredAt/recordedAt are always UTC (Z) or an explicit offset on the
-  // wire -- Date parses that correctly, and toLocaleString renders it in
-  // whichever timezone the browser itself is set to, not the server's.
-  function fmtTime(iso) {
-    if (!iso) return "";
-    const d = new Date(iso);
-    if (isNaN(d)) return iso;
-    return d.toLocaleString(undefined, {
-      year: "numeric", month: "short", day: "numeric",
-      hour: "2-digit", minute: "2-digit",
-    });
-  }
-
-  const timeline = (state.timeline || []).slice().reverse().map(t =>
-    `<div class="timeline-item"><time datetime="${t.at || ""}" title="${t.at || ""} (UTC/as recorded)">${fmtTime(t.at)}</time><br>
-     <strong>${t.type || ""}</strong>${t.producer ? " — " + t.producer : ""}</div>`
-  ).join("") || "<p>No events yet.</p>";
+  const timeline = (state.timeline || []).slice().reverse().map(t => {
+    const badge = t.producerVerified
+      ? `<span class="badge-verified" title="Domain-verified producer">✓ ${esc(t.producerDomain)}</span>` : "";
+    return `<div class="timeline-item"><time datetime="${esc(t.at)}" title="${esc(t.at)} (UTC/as recorded)">${fmtTime(t.at)}</time><br>
+     <strong>${esc(t.type)}</strong>${t.producer ? " — " + esc(t.producer) : ""}${badge}</div>`;
+  }).join("") || "<p>No events yet.</p>";
 
   const faults = (state.open_faults || []).map(f =>
-    `<li>${f.module || ""} ${f.code} — ${f.text || ""}</li>`
+    `<li>${esc(f.module)} ${esc(f.code)} — ${esc(f.text)}</li>`
   ).join("") || "<li>none</li>";
 
   app.innerHTML = `
     <h1>${desc || "Vehicle passport"}</h1>
     <div class="card">
-      <div class="field">VIN</div><div>${v.vin || "(not set)"}</div>
+      <div class="field">VIN</div><div>${esc(v.vin) || "(not set)"}</div>
       <div class="field">Mileage</div><div>${mileage}</div>
       <div class="field">Open faults</div><ul>${faults}</ul>
     </div>
     <div class="qr-box"><canvas id="qr"></canvas></div>
     <div class="qr-caption">passport sticker (scan to open this page)</div>
+
+    <h2>Vehicle info</h2>
+    <p>Add or correct VIN/make/model/year -- appends a <code>VehicleIdentified</code>
+    event; the original genesis event is never touched.</p>
+    <div class="row">
+      <input id="edit-vin" placeholder="VIN">
+      <input id="edit-make" placeholder="Make">
+      <input id="edit-model" placeholder="Model">
+      <input id="edit-year" placeholder="Year" style="width:5rem">
+      <button id="edit-btn">Save</button>
+    </div>
+    <p id="edit-status" class="error"></p>
+
+    <h2>Log an event</h2>
+    <div class="row">
+      <select id="log-type">
+        <option value="ServicePerformed">Service performed</option>
+        <option value="TyresInstalled">Tyres installed</option>
+        <option value="PartReplaced">Part replaced</option>
+        <option value="OdometerReading">Odometer reading</option>
+      </select>
+      <input id="log-desc" placeholder="What happened, e.g. Changed engine oil">
+      <input id="log-odo" placeholder="Odometer (km)" style="width:9rem">
+    </div>
+    <div class="row">
+      <input id="log-domain" placeholder="Logging as a verified workshop? domain, e.g. skoor.ee (optional)">
+      <button id="log-btn">Log event</button>
+    </div>
+    <p id="log-status" class="error"></p>
+
     <h2>Timeline</h2>
     ${timeline}
     <p><a class="export" href="/v1/passports/${id}/export">Export raw NDJSON</a></p>
@@ -136,6 +189,175 @@ async function main() {
   // serving this page, that's what a scan should open again.
   QRCode.toCanvas(document.getElementById("qr"), location.href,
     { errorCorrectionLevel: "M", margin: 2, scale: 5 });
+
+  document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
+  document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
+}
+
+function envelope(vehicleId, type, data, producer) {
+  const now = new Date().toISOString();
+  return {
+    "@context": "https://openvehiclepassport.org/ns/v0.1",
+    id: "urn:uuid:" + crypto.randomUUID(), // v4 is fine here: uniqueness is
+    // what matters for dedup, ordering already comes from occurredAt (see
+    // ovpf_core.reduce's sort key) -- not worth a hand-rolled uuid7 in the
+    // browser just to match the producer convention other clients use.
+    type, specVersion: "0.1", vehicle: `urn:ovpf:${vehicleId}`,
+    occurredAt: now, recordedAt: now,
+    producer, data,
+  };
+}
+
+async function postEvent(id, ev, statusEl) {
+  const r = await api(`/v1/passports/${id}/events`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(ev),
+  });
+  if (!r.ok) {
+    statusEl.textContent = `Error: ${r.body?.error || r.status}`;
+    return false;
+  }
+  return true;
+}
+
+async function submitVehicleInfo(id) {
+  const status = document.getElementById("edit-status");
+  const facts = {
+    vin: document.getElementById("edit-vin").value.trim(),
+    make: document.getElementById("edit-make").value.trim(),
+    model: document.getElementById("edit-model").value.trim(),
+    modelYear: document.getElementById("edit-year").value.trim(),
+  };
+  if (!Object.values(facts).some(Boolean)) { status.textContent = "Enter at least one field."; return; }
+  const vehicle = { type: "Vehicle" };
+  for (const [k, val] of Object.entries(facts)) if (val) vehicle[k] = val;
+  const ev = envelope(id, "VehicleIdentified", { vehicle }, { type: "Manual", name: "web" });
+  if (await postEvent(id, ev, status)) renderPassport(document.getElementById("app"), id);
+}
+
+async function submitLogEvent(id, currentVehicle) {
+  const status = document.getElementById("log-status");
+  const type = document.getElementById("log-type").value;
+  const desc = document.getElementById("log-desc").value.trim();
+  const odoRaw = document.getElementById("log-odo").value.trim();
+  const domain = document.getElementById("log-domain").value.trim().toLowerCase();
+  if (!desc && type !== "OdometerReading") { status.textContent = "Describe what happened."; return; }
+  if (type === "OdometerReading" && !odoRaw) { status.textContent = "Odometer value required."; return; }
+
+  const odometer = odoRaw ? { value: Number(odoRaw), unit: "KMT" } : undefined;
+  let data;
+  if (type === "OdometerReading") data = { value: Number(odoRaw), unit: "KMT" };
+  else if (type === "PartReplaced") data = { part: { type: "Product", name: desc }, odometer };
+  else data = { serviceType: desc, odometer };
+
+  // producer.domain is just this client's claim -- the provider is the
+  // only one who can turn that into producer.verified, by checking its
+  // own workshop registry at write time (see docs/TRUST.md). Submitting
+  // verified:true here would be silently stripped server-side.
+  const producer = domain
+    ? { type: "Workshop", domain, name: domain }
+    : { type: "Manual", name: "web" };
+  const ev = envelope(id, type, data, producer);
+  if (await postEvent(id, ev, status)) renderPassport(document.getElementById("app"), id);
+}
+
+// --- Workshop registration + DNS verification ------------------------------
+
+function renderWorkshopForm(app) {
+  app.innerHTML = `
+    <h1>Register a workshop</h1>
+    <p>Prove control of a domain (the same way ACME/Let's Encrypt does, via
+    a DNS TXT record) to bind a workshop identity to it. No account, no
+    approval queue -- a machine check, run on demand (see
+    <a href="https://github.com/tooming/openvehiclepassport/blob/main/docs/TRUST.md">docs/TRUST.md</a>).</p>
+    <div class="row">
+      <input id="ws-domain" placeholder="domain, e.g. skoor.ee">
+      <input id="ws-name" placeholder="workshop name (optional)">
+      <button id="ws-register-btn">Register</button>
+    </div>
+    <p id="ws-status" class="error"></p>
+    <p>Already registered a domain? <a href="#" id="ws-existing-link">check its status</a>.</p>
+  `;
+  document.getElementById("ws-register-btn").onclick = async () => {
+    const status = document.getElementById("ws-status");
+    const domain = document.getElementById("ws-domain").value.trim().toLowerCase();
+    if (!domain.includes(".")) { status.textContent = 'Enter a real domain, e.g. "skoor.ee".'; return; }
+    const name = document.getElementById("ws-name").value.trim();
+    const r = await api("/v1/workshops", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ domain, name }),
+    });
+    if (!r.ok) { status.textContent = `Error: ${r.body?.error || r.status}`; return; }
+    location.href = `/workshop/${encodeURIComponent(r.body.domain)}`;
+  };
+  document.getElementById("ws-existing-link").onclick = (e) => {
+    e.preventDefault();
+    const domain = prompt("Domain to look up:");
+    if (domain) location.href = `/workshop/${encodeURIComponent(domain.trim().toLowerCase())}`;
+  };
+}
+
+async function renderWorkshopStatus(app, domain) {
+  app.innerHTML = "Loading…";
+  const r = await api(`/v1/workshops/${encodeURIComponent(domain)}`);
+  if (r.status === 404) {
+    app.innerHTML = `<p class="error">No workshop registered for "${esc(domain)}" on this provider yet.</p>
+      <p><a href="/workshop">Register it</a>.</p>`;
+    return;
+  }
+  if (!r.ok) { app.innerHTML = `<p class="error">HTTP ${r.status}</p>`; return; }
+  const w = r.body;
+
+  const verifiedBlock = w.verified
+    ? `<p><span class="badge-verified">✓ Verified</span> since ${fmtTime(w.verifiedAt)}.
+       Events logged with <code>producer.domain: "${esc(w.domain)}"</code> on this
+       provider now get stamped <code>verified: true</code> automatically.</p>`
+    : `<p>Not verified yet. Add this DNS record, then check again --
+       propagation can take a few minutes:</p>
+       <code class="dns">Type:  TXT
+Name:  ${esc(w.dnsRecord.name)}
+Value: ${esc(w.dnsRecord.value)}</code>
+       <button id="ws-verify-btn">Check now</button>
+       <p id="ws-verify-status" class="error"></p>`;
+
+  app.innerHTML = `
+    <h1>${esc(w.name)}</h1>
+    <div class="card">
+      <div class="field">Domain</div><div>${esc(w.domain)}</div>
+      <div class="field">Status</div><div>${w.verified ? "✓ Verified" : "Pending verification"}</div>
+    </div>
+    ${verifiedBlock}
+    <p><a href="/workshop">Register another domain</a></p>
+  `;
+
+  const btn = document.getElementById("ws-verify-btn");
+  if (btn) btn.onclick = async () => {
+    const status = document.getElementById("ws-verify-status");
+    btn.disabled = true;
+    status.textContent = "Checking DNS…";
+    const vr = await api(`/v1/workshops/${encodeURIComponent(domain)}/verify`, { method: "POST" });
+    if (!vr.ok) { status.textContent = `Error: ${vr.body?.error || vr.status}`; btn.disabled = false; return; }
+    if (vr.body.verified) { renderWorkshopStatus(app, domain); return; }
+    status.textContent = vr.body.checkError
+      ? `DNS check failed: ${vr.body.checkError}`
+      : `Not found yet (saw: ${JSON.stringify(vr.body.found || [])}). DNS can take a few minutes to propagate -- try again shortly.`;
+    btn.disabled = false;
+  };
+}
+
+async function main() {
+  const app = document.getElementById("app");
+  let m;
+  if ((m = location.pathname.match(/^\/p\/([0-9a-fA-F-]{36})/))) {
+    return renderPassport(app, m[1]);
+  }
+  if (location.pathname === "/workshop") {
+    return renderWorkshopForm(app);
+  }
+  if ((m = location.pathname.match(/^\/workshop\/([^/]+)$/))) {
+    return renderWorkshopStatus(app, decodeURIComponent(m[1]));
+  }
+  return renderHome(app);
 }
 main();
 </script>
