@@ -35,13 +35,40 @@ recordedAt-is-immutable rule:
 | POST   | `/v1/passports`                | none |
 | GET    | `/v1/passports/{id}`           | none -- the id is the read capability |
 | POST   | `/v1/passports/{id}/events`    | none -- see below |
+| GET    | `/v1/passports/{id}/export`    | none |
 
 **POC MODE: there is no write access control at all right now**,
 matching `ovp-provider-aws`. A write-capability-token model existed and
 was removed entirely (not just left unenforced) for easier POCing --
 anyone who knows a passport id can append to it. Not the intended
 posture; see git history if it needs to come back.
-| GET    | `/v1/passports/{id}/export`    | none |
+
+## Rate limiting & cost protection
+
+This zone (`skoor.ee`) and this account's Workers subscription are
+both on Cloudflare's **Free** plan, which changes the risk shape
+compared to `ovp-provider-aws`: Free-tier Workers (100k requests/day)
+and KV (1k writes/day) have hard daily caps baked in. Abuse past the
+cap gets rejected, not billed -- there's no surprise invoice here the
+way there is on AWS's pay-per-request model. If this account is ever
+upgraded to the $5/mo Bundled plan, revisit this: overage past the
+included quota is billed per request, and the protections below become
+as important as the AWS side's.
+
+Already active, observed rather than configured: Cloudflare's
+bot-fight-mode is blocking non-browser-like clients on this zone (see
+`openvehiclepassport`'s `sync.py` User-Agent fix -- the exact block
+that forced that fix is also deflecting a category of scripted abuse
+here for free).
+
+Not yet done, needs the Cloudflare dashboard (this repo's OAuth token
+only has `zone:read`, not the scope to create rules via `wrangler` or
+API): add a **Rate Limiting Rule** (Security -> WAF -> Rate limiting
+rules) matching `passport.skoor.ee/v1/*`, e.g. block an IP past ~20
+requests/10s. This isn't about cost on the Free plan -- it's about one
+abusive client not exhausting the shared 1k-writes/day quota that
+legitimate use (yours, testing, anyone else's passport) also draws
+from.
 
 ## Storage
 
