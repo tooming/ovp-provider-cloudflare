@@ -854,14 +854,15 @@ function renderWorkshopSecretReveal(app, view) {
     { location.href = `/workshop/${encodeURIComponent(view.domain)}`; };
 }
 
-function renderMechanicSecretReveal(app, domain, mechanicName, mechanicSecret) {
+function renderMechanicSecretReveal(app, domain, mechanicName, mechanicSecret, heading, note) {
   app.innerHTML = `
-    <h1>${esc(mechanicName)} added</h1>
-    <p><strong>Save this secret now and hand it to them -- it will not be
-    shown again.</strong> It lets them sign in (the exact same sign-in box
-    as the workshop secret) and log events attributed to themself, without
-    ever holding the master secret that can add/remove mechanics or reset
-    it. Lost? Remove and re-add them for a fresh one.</p>
+    <h1>${esc(heading || `${mechanicName} added`)}</h1>
+    <p><strong>Save this secret now${heading ? "" : " and hand it to them"} -- it
+    will not be shown again.</strong> ${esc(note || "It lets them sign in (the "
+      + "exact same sign-in box as the workshop secret) and log events "
+      + "attributed to themself, without ever holding the master secret "
+      + "that can add/remove mechanics or reset it. Lost? Remove and "
+      + "re-add them for a fresh one.")}</p>
     <div class="row">
       <input id="mech-secret-field" value="${esc(mechanicSecret)}" readonly style="flex:1">
       <button id="mech-secret-copy">Copy</button>
@@ -984,7 +985,20 @@ Value: ${esc(w.dnsRecord.value)}</code>
         <input id="ws-secret-input" type="password" placeholder="secret" style="flex:1">
         <button id="ws-signin-btn">Sign in</button>
       </div>
-      <p id="ws-signin-status" class="error"></p>`;
+      <p id="ws-signin-status" class="error"></p>
+      <p>Mechanic with an email on file instead of a secret in hand?
+      <a href="#" id="otp-toggle-link">Sign in via email</a></p>
+      <div id="otp-area" style="display:none">
+        <div class="row">
+          <input id="otp-email" type="email" placeholder="your email" style="flex:1">
+          <button id="otp-request-btn">Send code</button>
+        </div>
+        <div class="row" id="otp-code-row" style="display:none">
+          <input id="otp-code" placeholder="6-digit code" style="max-width:9rem">
+          <button id="otp-verify-btn">Verify</button>
+        </div>
+        <p id="otp-status" class="error"></p>
+      </div>`;
   }
 
   // Reset always mints a new *master* secret via a live DNS check -- not
@@ -997,13 +1011,16 @@ Value: ${esc(w.dnsRecord.value)}</code>
   const mechanicsBlock = isOwner ? `
     <h2>Mechanics</h2>
     <p>Give a mechanic their own secret so work is attributed to the person
-    who actually did it, without sharing the workshop's master secret.
-    Removing someone doesn't touch any event they already produced.</p>
+    who actually did it, without sharing the workshop's master secret. Add
+    an email too and they can fetch a fresh secret themselves later via a
+    one-time code, no need to come back to you. Removing someone doesn't
+    touch any event they already produced.</p>
     <ul>${(w.mechanics || []).map(m =>
-      `<li>${esc(m.name)} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">Remove</button></li>`
+      `<li>${esc(m.name)}${m.hasEmail ? ' <span class="qr-caption">(email sign-in enabled)</span>' : ""} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">Remove</button></li>`
     ).join("") || "<li>none yet</li>"}</ul>
     <div class="row">
       <input id="ws-mech-name" placeholder="mechanic name">
+      <input id="ws-mech-email" type="email" placeholder="email (optional, enables OTP sign-in)">
       <button id="ws-mech-add-btn">Add</button>
     </div>
     <p id="ws-mech-status" class="error"></p>` : "";
@@ -1061,14 +1078,58 @@ Value: ${esc(w.dnsRecord.value)}</code>
   if (addBtn) addBtn.onclick = async () => {
     const status = document.getElementById("ws-mech-status");
     const name = document.getElementById("ws-mech-name").value.trim();
+    const email = document.getElementById("ws-mech-email").value.trim();
     if (!name) { status.textContent = "Enter a name."; return; }
     const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${session.secret}` },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, email }),
     });
     if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
     renderMechanicSecretReveal(app, domain, name, rr.body.mechanicSecret);
+  };
+
+  const otpToggle = document.getElementById("otp-toggle-link");
+  if (otpToggle) otpToggle.onclick = (e) => {
+    e.preventDefault();
+    document.getElementById("otp-area").style.display = "block";
+    otpToggle.style.display = "none";
+  };
+  const otpRequestBtn = document.getElementById("otp-request-btn");
+  if (otpRequestBtn) otpRequestBtn.onclick = async () => {
+    const status = document.getElementById("otp-status");
+    const email = document.getElementById("otp-email").value.trim();
+    if (!email) { status.textContent = "Enter your email."; return; }
+    otpRequestBtn.disabled = true;
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics/otp/request`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    otpRequestBtn.disabled = false;
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    status.textContent = rr.body.note || "Check your email for a code.";
+    document.getElementById("otp-code-row").style.display = "flex";
+  };
+  const otpVerifyBtn = document.getElementById("otp-verify-btn");
+  if (otpVerifyBtn) otpVerifyBtn.onclick = async () => {
+    const status = document.getElementById("otp-status");
+    const email = document.getElementById("otp-email").value.trim();
+    const code = document.getElementById("otp-code").value.trim();
+    if (!code) { status.textContent = "Enter the code from your email."; return; }
+    otpVerifyBtn.disabled = true;
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics/otp/verify`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, code }),
+    });
+    otpVerifyBtn.disabled = false;
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    setWorkshopSession(w.domain, rr.body.mechanicSecret,
+      { role: "mechanic", name: rr.body.name, mechanicId: rr.body.mechanicId });
+    renderMechanicSecretReveal(app, domain, rr.body.name, rr.body.mechanicSecret,
+      `Signed in as ${rr.body.name}`,
+      "This browser is now signed in -- the \"Log an event\" form on any " +
+      "passport will use this automatically. Verifying again later will " +
+      "issue a new secret and invalidate this one.");
   };
 
   document.querySelectorAll(".ws-remove-mech").forEach(btn => {

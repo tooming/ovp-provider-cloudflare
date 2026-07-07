@@ -21,6 +21,15 @@
     { "binding": "PASSPORTS", "id": "25b902565c2c451b8f87d62b3165149b" }
   ],
 
+  // RESEND_FROM is not a secret (just a sender address) so it lives here.
+  // RESEND_API_KEY is: set it with `wrangler secret put RESEND_API_KEY`,
+  // never in this committed file. With it unset, mechanic OTP email
+  // requests fail with a clear 502 instead of silently going nowhere
+  // (see worker.js's sendEmail).
+  "vars": {
+    "RESEND_FROM": "onboarding@resend.dev"
+  },
+
   "routes": [
     { "pattern": "passport.skoor.ee", "custom_domain": true }
   ]

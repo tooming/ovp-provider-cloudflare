@@ -141,16 +141,28 @@ function reduceWorkshop(events) {
       state.secretHash = d.secretHash;
       state.pendingResetToken = null; // challenge consumed
     } else if (t === "WorkshopMechanicAdded") {
-      state.mechanicsRaw.set(d.mechanicId, { name: d.name, secretHash: d.secretHash });
+      state.mechanicsRaw.set(d.mechanicId, { name: d.name, email: d.email || null, secretHash: d.secretHash });
     } else if (t === "WorkshopMechanicRemoved") {
       state.mechanicsRaw.delete(d.mechanicId);
+    } else if (t === "WorkshopMechanicSecretReset") {
+      const mech = state.mechanicsRaw.get(d.mechanicId);
+      if (mech) mech.secretHash = d.secretHash;
     }
   }
   // Sanitized list for anything that goes out over the wire -- secretHash
-  // never leaves this process. mechanicsRaw (with secretHash) stays only
-  // for matchProducerSecret to check against.
-  state.mechanics = [...state.mechanicsRaw].map(([mechanicId, m]) => ({ mechanicId, name: m.name }));
+  // never leaves this process, and neither does the raw email (this
+  // endpoint is unauthenticated/public; an address is real PII, unlike a
+  // first name, so only whether OTP sign-in is available gets shown).
+  state.mechanics = [...state.mechanicsRaw].map(([mechanicId, m]) =>
+    ({ mechanicId, name: m.name, hasEmail: !!m.email }));
   return state;
+}
+
+function findMechanicByEmail(state, email) {
+  for (const [mechanicId, m] of state.mechanicsRaw) {
+    if (m.email === email) return mechanicId;
+  }
+  return null;
 }
 
 async function getWorkshop(env, domain) {
@@ -372,20 +384,124 @@ async function addMechanic(request, env, domain) {
     return json({ error: "body must be JSON" }, 400);
   }
   const name = (body.name || "").trim();
+  const email = (body.email || "").trim().toLowerCase();
   if (!name) return json({ error: "name required" }, 400);
 
   const mechanicId = randomToken(6);
   const mechanicSecret = randomSecret();
   await appendWorkshopEvent(env, domain, newWorkshopEvent(
-    "WorkshopMechanicAdded", { mechanicId, name, secretHash: await secretHash(mechanicSecret) }));
+    "WorkshopMechanicAdded",
+    { mechanicId, name, email: email || null, secretHash: await secretHash(mechanicSecret) }));
   const view = workshopView(await getWorkshop(env, domain));
   view.mechanicId = mechanicId;
   view.mechanicSecret = mechanicSecret;
   view.note = "Save mechanicSecret now and hand it to the mechanic -- it " +
     "lets them sign in (same sign-in box as the workshop secret) and log " +
     "events attributed to themself. Won't be shown again; if lost, " +
-    "remove and re-add them.";
+    (email ? "they can fetch a fresh one themselves via email (see the " +
+      "\"sign in with email\" option), or you can remove and re-add them."
+      : "remove and re-add them.");
   return json(view, 201);
+}
+
+// --- Mechanic OTP challenges: deliberately NOT event-sourced ---------------
+// Everything else here is an immutable, hash-chained event because it's
+// meant to be permanent history. A one-time login code is the opposite:
+// only ever meaningful for ~10 minutes, and keeping it around (even
+// hashed) after it expires serves no one. Stored as a plain KV entry with
+// expirationTtl instead -- Cloudflare deletes it on its own.
+
+function otpKey(domain, mechanicId) {
+  return `MECHOTP#${workshopDomain(domain)}#${mechanicId}`;
+}
+
+async function storeOtp(env, domain, mechanicId, code, ttlSeconds = 600) {
+  await env.PASSPORTS.put(otpKey(domain, mechanicId), await secretHash(code), { expirationTtl: ttlSeconds });
+}
+
+async function checkAndConsumeOtp(env, domain, mechanicId, code) {
+  const key = otpKey(domain, mechanicId);
+  const stored = await env.PASSPORTS.get(key);
+  if (!stored) return false;
+  if (stored !== (await secretHash(code))) return false;
+  await env.PASSPORTS.delete(key); // one-time use
+  return true;
+}
+
+async function sendEmail(env, to, subject, text) {
+  // Thin wrapper around Resend's HTTP API -- not a queue/retry system: an
+  // OTP is useless a minute late, so a failed send should surface
+  // immediately, not get silently swallowed. Requires RESEND_API_KEY
+  // (set via `wrangler secret put RESEND_API_KEY`); with none configured,
+  // this throws rather than pretending to succeed.
+  if (!env.RESEND_API_KEY) throw new Error("RESEND_API_KEY not configured on this provider");
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ from: env.RESEND_FROM || "onboarding@resend.dev", to: [to], subject, text }),
+  });
+  if (!resp.ok) throw new Error(`Resend API returned HTTP ${resp.status}`);
+  return resp.json();
+}
+
+async function requestMechanicOtp(request, env, domain) {
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+  const email = (body.email || "").trim().toLowerCase();
+  if (!email) return json({ error: "email required" }, 400);
+
+  // Always the same generic response regardless of a match -- this must
+  // not become a way to enumerate who works at a given shop.
+  const mechanicId = findMechanicByEmail(state, email);
+  if (mechanicId) {
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    await storeOtp(env, domain, mechanicId, code);
+    try {
+      await sendEmail(env, email, "Your Open Vehicle Passport sign-in code",
+        `Your one-time code is ${code}. It expires in 10 minutes.\n\n` +
+        `If you didn't request this, ignore this email.`);
+    } catch (e) {
+      return json({ error: `could not send email: ${e}` }, 502);
+    }
+  }
+  return json({ sent: true, note: "If that email is on file for this workshop, a code was sent." });
+}
+
+async function verifyMechanicOtp(request, env, domain) {
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+  const email = (body.email || "").trim().toLowerCase();
+  const code = (body.code || "").trim();
+  if (!email || !code) return json({ error: "email and code required" }, 400);
+
+  const mechanicId = findMechanicByEmail(state, email);
+  if (!mechanicId || !(await checkAndConsumeOtp(env, domain, mechanicId, code))) {
+    return json({ error: "invalid or expired code" }, 403);
+  }
+
+  const mechanicSecret = randomSecret();
+  await appendWorkshopEvent(env, domain, newWorkshopEvent(
+    "WorkshopMechanicSecretReset", { mechanicId, secretHash: await secretHash(mechanicSecret) }));
+  const mech = state.mechanicsRaw.get(mechanicId);
+  return json({ mechanicId, name: mech.name, mechanicSecret,
+    note: "Save this now -- it won't be shown again." });
 }
 
 async function whoamiWorkshop(request, env, domain) {
@@ -520,6 +636,12 @@ export default {
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/secret\/reset\/confirm$/);
     if (m && method === "POST") return confirmSecretReset(request, env, m[1]);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/mechanics\/otp\/request$/);
+    if (m && method === "POST") return requestMechanicOtp(request, env, m[1]);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/mechanics\/otp\/verify$/);
+    if (m && method === "POST") return verifyMechanicOtp(request, env, m[1]);
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/mechanics\/([^/]+)$/);
     if (m && method === "DELETE") return removeMechanic(request, env, m[1], m[2]);
