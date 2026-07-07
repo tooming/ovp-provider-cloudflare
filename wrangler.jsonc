@@ -18,7 +18,7 @@
   },
 
   "kv_namespaces": [
-    { "binding": "PASSPORTS", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }
+    { "binding": "PASSPORTS", "id": "25b902565c2c451b8f87d62b3165149b" }
   ],
 
   "routes": [

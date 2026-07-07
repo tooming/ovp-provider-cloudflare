@@ -47,11 +47,22 @@ posture; see git history if it needs to come back.
 
 One KV namespace, `PASSPORTS`:
 
-- `PASSPORT#<id>#META` -- write-token hash.
+- `PASSPORT#<id>#META` -- registration marker (just `createdAt`; no
+  credential stored here anymore, see Auth above).
 - `PASSPORT#<id>#EVENT#<recordedAt>#<eventId>` -- one immutable value per
   event. `list({prefix})` returns keys in sorted order, same role
   DynamoDB's `Query`-by-`sk` plays for the AWS provider -- no schema,
   no SQL, the KV key ordering does the work.
+
+**Known, disclosed limitation: Cloudflare KV is eventually consistent.**
+Observed in production: an event `PUT` right before a `GET` on the same
+passport was missing from the derived state for roughly 15-20 seconds
+before showing up. This is expected KV behavior (Cloudflare documents
+up to ~60s global propagation), not a bug in this Worker -- but it's a
+real, disclosable tradeoff of choosing KV over a strongly-consistent
+store like DynamoDB. If a client (the QR viewer, `ovpf --sync`) reads
+immediately after writing and doesn't see its own write yet, that's
+this, not corruption.
 
 ## Viewer
 
