@@ -117,19 +117,21 @@ async function copyToClipboard(text, btn) {
 }
 
 // One workshop "session" per browser -- a POC-simple stand-in for a real
-// login. Storing the actual secret in localStorage is what lets "Log an
-// event" on any passport auto-attach it when the domain matches, which is
-// the whole point (see the user's "how do I act as this workshop" ask).
+// login. Storing the signed session token in localStorage is what lets
+// "Log an event" on any passport auto-attach it when the domain matches,
+// which is the whole point (see the user's "how do I act as this
+// workshop" ask). The token itself is only ever obtained via OTP -- there
+// is no standing secret anywhere in this system.
 const WORKSHOP_SESSION_KEY = "ovp_workshop_session";
 function getWorkshopSession() {
   try { return JSON.parse(localStorage.getItem(WORKSHOP_SESSION_KEY)); } catch { return null; }
 }
-function setWorkshopSession(domain, secret, extra) {
+function setWorkshopSession(domain, token, extra) {
   // extra caches {role, name, mechanicId} once /whoami has resolved it, so
   // pages that don't need to re-confirm the role (e.g. the passport log
   // form's hint) don't have to make an extra round trip just to word it
   // right -- the workshop status page still always reconfirms live.
-  localStorage.setItem(WORKSHOP_SESSION_KEY, JSON.stringify({ domain, secret, ...(extra || {}) }));
+  localStorage.setItem(WORKSHOP_SESSION_KEY, JSON.stringify({ domain, token, ...(extra || {}) }));
 }
 function clearWorkshopSession() {
   localStorage.removeItem(WORKSHOP_SESSION_KEY);
@@ -786,7 +788,7 @@ async function submitLogEvent(id, currentVehicle) {
 
   const session = getWorkshopSession();
   const headers = (domain && session && session.domain === domain)
-    ? { authorization: `Bearer ${session.secret}` } : {};
+    ? { authorization: `Bearer ${session.token}` } : {};
   await enqueueEvent(id, ev, headers);
 }
 
@@ -817,14 +819,7 @@ function renderWorkshopForm(app) {
       body: JSON.stringify({ domain, name }),
     });
     if (!r.ok) { status.textContent = `Error: ${r.body?.error || r.status}`; return; }
-    if (r.body.workshopSecret) {
-      // Freshly minted -- show it once, here, now. The API never returns
-      // it again after this response.
-      setWorkshopSession(r.body.domain, r.body.workshopSecret, { role: "workshop", name: r.body.name });
-      renderWorkshopSecretReveal(app, r.body);
-    } else {
-      location.href = `/workshop/${encodeURIComponent(r.body.domain)}`;
-    }
+    location.href = `/workshop/${encodeURIComponent(r.body.domain)}`;
   };
   document.getElementById("ws-existing-link").onclick = (e) => {
     e.preventDefault();
@@ -833,80 +828,39 @@ function renderWorkshopForm(app) {
   };
 }
 
-function renderWorkshopSecretReveal(app, view) {
+function renderOwnerEmailClaimChallenge(app, domain, challenge) {
   app.innerHTML = `
-    <h1>${esc(view.name)} registered</h1>
-    <p><strong>Save this secret now -- it will not be shown again.</strong>
-    It's what proves a future request actually comes from you, not just
-    someone who knows this domain's name.</p>
-    <div class="row">
-      <input id="ws-secret-field" value="${esc(view.workshopSecret)}" readonly style="flex:1">
-      <button id="ws-secret-copy">Copy</button>
-    </div>
-    <p>This browser is now signed in as <strong>${esc(view.domain)}</strong> --
-    the "Log an event" form on any passport will use it automatically once
-    the domain is verified.</p>
-    <button id="ws-continue-btn">Continue</button>
-  `;
-  document.getElementById("ws-secret-copy").onclick = () =>
-    copyToClipboard(view.workshopSecret, document.getElementById("ws-secret-copy"));
-  document.getElementById("ws-continue-btn").onclick = () =>
-    { location.href = `/workshop/${encodeURIComponent(view.domain)}`; };
-}
-
-function renderMechanicSecretReveal(app, domain, mechanicName, mechanicSecret, heading, note) {
-  app.innerHTML = `
-    <h1>${esc(heading || `${mechanicName} added`)}</h1>
-    <p><strong>Save this secret now${heading ? "" : " and hand it to them"} -- it
-    will not be shown again.</strong> ${esc(note || "It lets them sign in (the "
-      + "exact same sign-in box as the workshop secret) and log events "
-      + "attributed to themself, without ever holding the master secret "
-      + "that can add/remove mechanics or reset it. Lost? Remove and "
-      + "re-add them for a fresh one.")}</p>
-    <div class="row">
-      <input id="mech-secret-field" value="${esc(mechanicSecret)}" readonly style="flex:1">
-      <button id="mech-secret-copy">Copy</button>
-    </div>
-    <button id="mech-continue-btn">Back to workshop</button>
-  `;
-  document.getElementById("mech-secret-copy").onclick = () =>
-    copyToClipboard(mechanicSecret, document.getElementById("mech-secret-copy"));
-  document.getElementById("mech-continue-btn").onclick = () => renderWorkshopStatus(app, domain);
-}
-
-function renderSecretResetChallenge(app, domain, w, challenge) {
-  app.innerHTML = `
-    <h1>Reset the workshop's own secret</h1>
+    <h1>Confirm owner email</h1>
     <p>Add this DNS TXT record -- separate from the permanent verification
     one -- then confirm. This proves you can write to this domain's DNS
-    <em>right now</em>, not just that it was verified at some point in the
-    past (a permanent record could otherwise be replayed by anyone who
-    simply reads it back off this site).</p>
+    <em>right now</em>, which is what earns <strong>${esc(challenge.email)}</strong>
+    the right to sign in as this workshop's owner going forward. Needed
+    once (or again if you ever change it) -- day-to-day sign-in afterward
+    is just a one-time emailed code, no DNS involved.</p>
     <code class="dns">Type:  TXT
 Name:  ${esc(challenge.dnsRecord.name)}
 Value: ${esc(challenge.dnsRecord.value)}</code>
-    <button id="reset-confirm-btn">I've added it -- confirm</button>
-    <p id="reset-confirm-status" class="error"></p>
-    <p><a href="#" id="reset-cancel-link">Cancel</a></p>
+    <button id="claim-confirm-btn">I've added it -- confirm</button>
+    <p id="claim-confirm-status" class="error"></p>
+    <p><a href="#" id="claim-cancel-link">Cancel</a></p>
   `;
-  document.getElementById("reset-confirm-btn").onclick = async () => {
-    const status = document.getElementById("reset-confirm-status");
-    const btn = document.getElementById("reset-confirm-btn");
+  document.getElementById("claim-confirm-btn").onclick = async () => {
+    const status = document.getElementById("claim-confirm-status");
+    const btn = document.getElementById("claim-confirm-btn");
     btn.disabled = true;
     status.textContent = "Checking DNS…";
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/secret/reset/confirm`, { method: "POST" });
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/owner-email/confirm`, { method: "POST" });
     if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; btn.disabled = false; return; }
-    if (!rr.body.workshopSecret) {
+    if (!rr.body.email) {
       status.textContent = rr.body.error
         ? `DNS check failed: ${rr.body.error}`
         : `Not found yet (saw: ${JSON.stringify(rr.body.found || [])}). DNS can take a few minutes to propagate -- try again shortly.`;
       btn.disabled = false;
       return;
     }
-    setWorkshopSession(w.domain, rr.body.workshopSecret, { role: "workshop", name: w.name });
-    renderWorkshopSecretReveal(app, { ...w, workshopSecret: rr.body.workshopSecret });
+    renderWorkshopStatus(app, domain);
   };
-  document.getElementById("reset-cancel-link").onclick = (e) => {
+  document.getElementById("claim-cancel-link").onclick = (e) => {
     e.preventDefault();
     renderWorkshopStatus(app, domain);
   };
@@ -926,24 +880,24 @@ async function renderWorkshopStatus(app, domain) {
   // A cached role (from a previous /whoami) isn't trusted for the actual
   // gating below -- it's reconfirmed live every time this page loads,
   // since this is exactly the page that decides which controls (owner
-  // admin vs. a mechanic's own attribution) get shown. A stale or revoked
-  // secret gets signed out here, with a reason, rather than silently
-  // rendering a broken state.
+  // admin vs. a mechanic's own attribution) get shown. A stale, expired,
+  // or revoked session gets signed out here, with a reason, rather than
+  // silently rendering a broken state.
   let session = getWorkshopSession();
   let who = null;
   let staleNote = "";
   if (session && session.domain === w.domain) {
     const whoR = await api(`/v1/workshops/${encodeURIComponent(domain)}/whoami`,
-      { headers: { authorization: `Bearer ${session.secret}` } });
+      { headers: { authorization: `Bearer ${session.token}` } });
     if (whoR.ok) {
       who = whoR.body;
-      setWorkshopSession(w.domain, session.secret, { role: who.role, name: who.name, mechanicId: who.mechanicId });
+      setWorkshopSession(w.domain, session.token, { role: who.role, name: who.name, mechanicId: who.mechanicId });
       session = getWorkshopSession();
     } else {
       clearWorkshopSession();
       session = null;
-      staleNote = "This browser's saved sign-in no longer works (the secret " +
-        "may have been reset or removed) -- signed out. ";
+      staleNote = "This browser's saved sign-in no longer works (it may have " +
+        "expired, or the owner email/a mechanic may have changed) -- signed out. ";
     }
   }
   const isOwner = !!who && who.role === "workshop";
@@ -951,9 +905,9 @@ async function renderWorkshopStatus(app, domain) {
 
   const verifiedBlock = w.verified
     ? `<p><span class="badge-verified">✓ Verified</span> since ${fmtTime(w.verifiedAt)}.
-       Events logged with <code>producer.domain: "${esc(w.domain)}"</code> and
-       a secret this workshop recognizes get stamped <code>verified: true</code>
-       automatically (and attributed by name, if it's a specific mechanic's secret).</p>`
+       Events logged with <code>producer.domain: "${esc(w.domain)}"</code> from a
+       signed-in session get stamped <code>verified: true</code> automatically
+       (and attributed by name, if it's a mechanic's session).</p>`
     : `<p>Not verified yet. Add this DNS record, then check again --
        propagation can take a few minutes:</p>
        <code class="dns">Type:  TXT
@@ -965,6 +919,23 @@ Value: ${esc(w.dnsRecord.value)}</code>
        this check -- there's no separate "verifier" role or approval queue,
        same as ACME/Let's Encrypt.</p>`;
 
+  // Owner sign-in only exists once an owner email is on file -- claiming
+  // (or changing) it is the one place DNS matters for login at all; every
+  // sign-in afterward, owner or mechanic, is just OTP.
+  const ownerEmailBlock = !w.ownerEmailSet
+    ? `<h2>Set up owner sign-in</h2>
+       <p>Prove which email is allowed to act as this workshop's owner --
+       one DNS proof, needed once (or again if you ever change it).</p>
+       <div class="row">
+         <input id="owner-email-input" type="email" placeholder="your email" style="flex:1">
+         <button id="owner-email-start-btn">Claim this email</button>
+       </div>
+       <p id="owner-email-status" class="error"></p>`
+    : isOwner
+      ? `<p class="qr-caption">Owner sign-in email is set.
+         <a href="#" id="owner-email-change-link">Change it</a> (needs a fresh DNS proof).</p>`
+      : "";
+
   let identityBlock;
   if (isOwner) {
     identityBlock = `<p>${esc(staleNote)}This browser is signed in as the
@@ -975,52 +946,36 @@ Value: ${esc(w.dnsRecord.value)}</code>
       <strong>${esc(who.name)}</strong> at ${esc(w.domain)}. Events logged from
       here will be attributed to you by name automatically.
       <button id="ws-signout-btn">Sign out</button></p>`;
-  } else {
+  } else if (w.ownerEmailSet) {
     identityBlock = `<h2>Sign in</h2>
-      <p>${esc(staleNote)}Paste a secret to sign in -- the workshop's own secret
-      (full admin: manage mechanics, reset the secret) or a specific mechanic's
-      own secret (log events attributed to yourself, nothing else). The same
-      box works for both; whichever it matches decides your role.</p>
+      <p>${esc(staleNote)}Enter your email -- the workshop owner's, or a
+      mechanic's -- to get a one-time code. The same box works for both;
+      whichever it matches decides your role. No secret to remember.</p>
       <div class="row">
-        <input id="ws-secret-input" type="password" placeholder="secret" style="flex:1">
-        <button id="ws-signin-btn">Sign in</button>
+        <input id="otp-email" type="email" placeholder="your email" style="flex:1">
+        <button id="otp-request-btn">Send code</button>
       </div>
-      <p id="ws-signin-status" class="error"></p>
-      <p>Mechanic with an email on file instead of a secret in hand?
-      <a href="#" id="otp-toggle-link">Sign in via email</a></p>
-      <div id="otp-area" style="display:none">
-        <div class="row">
-          <input id="otp-email" type="email" placeholder="your email" style="flex:1">
-          <button id="otp-request-btn">Send code</button>
-        </div>
-        <div class="row" id="otp-code-row" style="display:none">
-          <input id="otp-code" placeholder="6-digit code" style="max-width:9rem">
-          <button id="otp-verify-btn">Verify</button>
-        </div>
-        <p id="otp-status" class="error"></p>
-      </div>`;
+      <div class="row" id="otp-code-row" style="display:none">
+        <input id="otp-code" placeholder="6-digit code" style="max-width:9rem">
+        <button id="otp-verify-btn">Verify</button>
+      </div>
+      <p id="otp-status" class="error"></p>`;
+  } else {
+    identityBlock = `<p class="qr-caption">${esc(staleNote)}Set up owner sign-in above before anyone can sign in.</p>`;
   }
-
-  // Reset always mints a new *master* secret via a live DNS check -- not
-  // gated on being signed in at all (DNS control is the only credential it
-  // actually checks), so it's offered regardless of role.
-  const resetBlock = `<p class="qr-caption">Lost the workshop's own secret, or
-    need to invalidate it? <a href="#" id="ws-reset-link">Reset it</a>
-    (needs this domain's DNS TXT record to still be in place).</p>`;
 
   const mechanicsBlock = isOwner ? `
     <h2>Mechanics</h2>
-    <p>Give a mechanic their own secret so work is attributed to the person
-    who actually did it, without sharing the workshop's master secret. Add
-    an email too and they can fetch a fresh secret themselves later via a
-    one-time code, no need to come back to you. Removing someone doesn't
-    touch any event they already produced.</p>
+    <p>Add a mechanic by email -- they sign in with it via a one-time code,
+    same as you just did, no secret to hand over. Name is just a label
+    (defaults to the email if left blank). Removing someone doesn't touch
+    any event they already produced.</p>
     <ul>${(w.mechanics || []).map(m =>
-      `<li>${esc(m.name)}${m.hasEmail ? ' <span class="qr-caption">(email sign-in enabled)</span>' : ""} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">Remove</button></li>`
+      `<li>${esc(m.name)} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">Remove</button></li>`
     ).join("") || "<li>none yet</li>"}</ul>
     <div class="row">
-      <input id="ws-mech-name" placeholder="mechanic name">
-      <input id="ws-mech-email" type="email" placeholder="email (optional, enables OTP sign-in)">
+      <input id="ws-mech-email" type="email" placeholder="mechanic email">
+      <input id="ws-mech-name" placeholder="name (optional)">
       <button id="ws-mech-add-btn">Add</button>
     </div>
     <p id="ws-mech-status" class="error"></p>` : "";
@@ -1032,8 +987,8 @@ Value: ${esc(w.dnsRecord.value)}</code>
       <div class="field">Status</div><div>${w.verified ? "✓ Verified" : "Pending verification"}</div>
     </div>
     ${verifiedBlock}
+    ${ownerEmailBlock}
     ${identityBlock}
-    ${resetBlock}
     ${mechanicsBlock}
     <p><a href="/workshop">Register another domain</a></p>
   `;
@@ -1052,56 +1007,39 @@ Value: ${esc(w.dnsRecord.value)}</code>
     verifyBtn.disabled = false;
   };
 
-  const signinBtn = document.getElementById("ws-signin-btn");
-  if (signinBtn) signinBtn.onclick = () => {
-    const status = document.getElementById("ws-signin-status");
-    const secret = document.getElementById("ws-secret-input").value.trim();
-    if (!secret) { status.textContent = "Paste a secret first."; return; }
-    // Not validated here -- renderWorkshopStatus's own /whoami call on the
-    // next render is what confirms it (or signs back out with a reason).
-    setWorkshopSession(w.domain, secret);
-    renderWorkshopStatus(app, domain);
-  };
-
-  const signoutBtn = document.getElementById("ws-signout-btn");
-  if (signoutBtn) signoutBtn.onclick = () => { clearWorkshopSession(); renderWorkshopStatus(app, domain); };
-
-  const resetLink = document.getElementById("ws-reset-link");
-  if (resetLink) resetLink.onclick = async (e) => {
-    e.preventDefault();
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/secret/reset/start`, { method: "POST" });
-    if (!rr.ok) { alert(`Could not start reset: ${rr.body?.error || rr.status}`); return; }
-    renderSecretResetChallenge(app, domain, w, rr.body);
-  };
-
-  const addBtn = document.getElementById("ws-mech-add-btn");
-  if (addBtn) addBtn.onclick = async () => {
-    const status = document.getElementById("ws-mech-status");
-    const name = document.getElementById("ws-mech-name").value.trim();
-    const email = document.getElementById("ws-mech-email").value.trim();
-    if (!name) { status.textContent = "Enter a name."; return; }
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${session.secret}` },
-      body: JSON.stringify({ name, email }),
+  const ownerEmailStartBtn = document.getElementById("owner-email-start-btn");
+  if (ownerEmailStartBtn) ownerEmailStartBtn.onclick = async () => {
+    const status = document.getElementById("owner-email-status");
+    const email = document.getElementById("owner-email-input").value.trim();
+    if (!email) { status.textContent = "Enter an email."; return; }
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/owner-email/start`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
     });
     if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
-    renderMechanicSecretReveal(app, domain, name, rr.body.mechanicSecret);
+    renderOwnerEmailClaimChallenge(app, domain, rr.body);
   };
 
-  const otpToggle = document.getElementById("otp-toggle-link");
-  if (otpToggle) otpToggle.onclick = (e) => {
+  const ownerEmailChangeLink = document.getElementById("owner-email-change-link");
+  if (ownerEmailChangeLink) ownerEmailChangeLink.onclick = async (e) => {
     e.preventDefault();
-    document.getElementById("otp-area").style.display = "block";
-    otpToggle.style.display = "none";
+    const email = prompt("New owner email:");
+    if (!email) return;
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/owner-email/start`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: email.trim() }),
+    });
+    if (!rr.ok) { alert(`Error: ${rr.body?.error || rr.status}`); return; }
+    renderOwnerEmailClaimChallenge(app, domain, rr.body);
   };
+
   const otpRequestBtn = document.getElementById("otp-request-btn");
   if (otpRequestBtn) otpRequestBtn.onclick = async () => {
     const status = document.getElementById("otp-status");
     const email = document.getElementById("otp-email").value.trim();
     if (!email) { status.textContent = "Enter your email."; return; }
     otpRequestBtn.disabled = true;
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics/otp/request`, {
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/otp/request`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email }),
     });
@@ -1117,25 +1055,39 @@ Value: ${esc(w.dnsRecord.value)}</code>
     const code = document.getElementById("otp-code").value.trim();
     if (!code) { status.textContent = "Enter the code from your email."; return; }
     otpVerifyBtn.disabled = true;
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics/otp/verify`, {
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/otp/verify`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email, code }),
     });
     otpVerifyBtn.disabled = false;
     if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
-    setWorkshopSession(w.domain, rr.body.mechanicSecret,
-      { role: "mechanic", name: rr.body.name, mechanicId: rr.body.mechanicId });
-    renderMechanicSecretReveal(app, domain, rr.body.name, rr.body.mechanicSecret,
-      `Signed in as ${rr.body.name}`,
-      "This browser is now signed in -- the \"Log an event\" form on any " +
-      "passport will use this automatically. Verifying again later will " +
-      "issue a new secret and invalidate this one.");
+    setWorkshopSession(w.domain, rr.body.token,
+      { role: rr.body.role, name: rr.body.name, mechanicId: rr.body.mechanicId });
+    renderWorkshopStatus(app, domain);
+  };
+
+  const signoutBtn = document.getElementById("ws-signout-btn");
+  if (signoutBtn) signoutBtn.onclick = () => { clearWorkshopSession(); renderWorkshopStatus(app, domain); };
+
+  const addBtn = document.getElementById("ws-mech-add-btn");
+  if (addBtn) addBtn.onclick = async () => {
+    const status = document.getElementById("ws-mech-status");
+    const email = document.getElementById("ws-mech-email").value.trim();
+    const name = document.getElementById("ws-mech-name").value.trim();
+    if (!email) { status.textContent = "Enter an email."; return; }
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
+      body: JSON.stringify({ email, name }),
+    });
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    renderWorkshopStatus(app, domain);
   };
 
   document.querySelectorAll(".ws-remove-mech").forEach(btn => {
     btn.onclick = async () => {
       const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics/${encodeURIComponent(btn.dataset.id)}`, {
-        method: "DELETE", headers: { authorization: `Bearer ${session.secret}` },
+        method: "DELETE", headers: { authorization: `Bearer ${session.token}` },
       });
       if (!rr.ok) { alert(`Error: ${rr.body?.error || rr.status}`); return; }
       renderWorkshopStatus(app, domain);

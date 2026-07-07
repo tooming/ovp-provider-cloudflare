@@ -21,13 +21,16 @@
     { "binding": "PASSPORTS", "id": "25b902565c2c451b8f87d62b3165149b" }
   ],
 
-  // RESEND_FROM is not a secret (just a sender address) so it lives here.
-  // RESEND_API_KEY is: set it with `wrangler secret put RESEND_API_KEY`,
-  // never in this committed file. With it unset, mechanic OTP email
-  // requests fail with a clear 502 instead of silently going nowhere
-  // (see worker.js's sendEmail).
+  // POSTMARK_FROM is not a secret (just a sender address) so it lives
+  // here -- must be a Sender Signature verified with Postmark. Real
+  // secrets (POSTMARK_API_TOKEN, SESSION_SIGNING_KEY) are set with
+  // `wrangler secret put <NAME>`, never in this committed file. With
+  // POSTMARK_API_TOKEN unset, OTP email requests fail with a clear 502
+  // instead of silently going nowhere (see worker.js's sendEmail). With
+  // SESSION_SIGNING_KEY unset, OTP verification fails clearly instead of
+  // issuing an unusable session (see issueSessionToken).
   "vars": {
-    "RESEND_FROM": "onboarding@resend.dev"
+    "POSTMARK_FROM": ""
   },
 
   "routes": [
