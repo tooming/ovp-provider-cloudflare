@@ -62,8 +62,12 @@
 </head>
 <body>
 <nav class="no-print">
-  <span class="links"><a href="/">Passport home</a><a href="/workshop">Register a workshop</a></span>
+  <span class="links"><a href="/" id="nav-home-link">Passport home</a><a href="/workshop" id="nav-workshop-link">Register a workshop</a></span>
   <span id="auth-status"></span>
+  <select id="lang-select" aria-label="Language" style="font:inherit;padding:0.15rem 0.3rem;border-radius:6px;border:1px solid #8886;background:transparent;color:inherit">
+    <option value="en">English</option>
+    <option value="et">Eesti</option>
+  </select>
 </nav>
 <div id="nav-signin-box" class="no-print" style="display:none">
   <div class="row">
@@ -117,6 +121,335 @@ function fmtTime(iso) {
   }));
 }
 
+// --- i18n --------------------------------------------------------------
+// A translation dictionary, not a translation *service* -- no external
+// API, matching this app's local-first/offline promise (a network call
+// just to render text would defeat the whole point). Adding a language
+// is adding one more object below; nothing else in this file needs to
+// change. {placeholder} tokens are replaced from the vars object passed
+// to t() -- deliberately simpler than a full ICU/plural-rules engine,
+// which this app's actual strings never need.
+const I18N = {
+  en: {
+    nav_passport_home: "Passport home",
+    nav_register_workshop: "Register a workshop",
+    nav_not_signed_in: "Not signed in",
+    nav_sign_in: "Sign in",
+    nav_sign_out: "sign out",
+    nav_mechanic_at: "mechanic {name} @ {domain}",
+    nav_workshop_owner_at: "workshop owner @ {domain}",
+
+    otp_email_placeholder: "your email",
+    otp_send_code: "Send code",
+    otp_code_placeholder: "6-digit code",
+    otp_verify: "Verify",
+    otp_enter_email: "Enter your email.",
+    otp_check_email: "Check your email for a code.",
+    otp_enter_code: "Enter the code from your email.",
+    error_prefix: "Error: {msg}",
+
+    home_title: "Open Vehicle Passport",
+    home_intro: "No passport id in the URL. Scan a sticker ({code}), or create a new passport with this provider:",
+    home_create_btn: "Create a new passport",
+    home_fresh_note: "A fresh passport has no vehicle data yet -- the id itself is the identity; VIN and everything else gets added later as events (from OpenDiag, a verified workshop, or any other producer).",
+    home_scan_heading: "Scan a QR code",
+    home_scan_btn: "Scan a QR code",
+    home_scan_cancel: "Cancel",
+    home_open_heading: "Open an existing passport",
+    home_open_intro: "Lost the sticker or the link? Paste the passport id, or the full URL -- either works.",
+    home_open_placeholder: "passport id, or https://.../p/<uuid>",
+    home_open_btn: "Open",
+    home_open_invalid: "That doesn't look like a passport id or link.",
+    scan_loading: "Loading QR decoder…",
+    scan_camera_error: "Could not access the camera: {msg}",
+    scan_point_camera: "Point the camera at a passport sticker…",
+    scan_not_passport: "Scanned a QR code, but it's not a passport link.",
+    scan_decoder_error: "could not load the QR decoder",
+
+    passport_default_heading: "Vehicle passport",
+    sync_errors: "⚠ {count} event(s) failed to sync. ",
+    retry_btn: "Retry",
+    sync_needs_signin: "Not yet synced -- sign in below to push to a provider.",
+    sync_offline_pending: "⚠ Offline — {count} pending. ",
+    sync_try_now: "Try syncing now",
+    sync_offline_cached: "⚠ Offline — showing the last copy this browser saved.",
+    sync_pending: "⟳ {count} pending — ",
+    sync_syncing: "syncing…",
+    sync_will_sync: "will sync when back online",
+    sync_now_btn: "Sync now",
+    sync_never: "Not yet synced to any provider — add info or log an event above to start.",
+    sync_done: "✓ Synced",
+    signed_in_as: "(signed in as {email} · {link})",
+    signin_box_note: "Adding info and logging events works fully offline, no login needed -- signing in is only for pushing this passport to a cloud provider. Any email works, just to prove you control it: a one-time code, no password. A workshop's mechanic or owner should sign in from {em}that workshop's own page{emEnd} instead, to get verified attribution -- this box only ever grants a plain personal identity.",
+    printed_at: "Printed {time} — full history: {url}",
+    field_vin: "VIN",
+    field_not_set: "(not set)",
+    field_mileage: "Mileage",
+    field_mileage_unknown: "unknown",
+    field_open_faults: "Open faults",
+    edit_vehicle_info_toggle: "Edit vehicle info",
+    edit_vehicle_info_hide: "Hide",
+    edit_vehicle_info_note: "Add or correct VIN/make/model/year -- appends a {code} event; the original genesis event is never touched.",
+    vin_placeholder: "VIN",
+    make_placeholder: "Make",
+    model_placeholder: "Model",
+    year_placeholder: "Year",
+    save_btn: "Save",
+    enter_one_field: "Enter at least one field.",
+    qr_caption: "passport sticker (scan to open this page)",
+    copy_link_btn: "Copy link",
+    copied_btn: "Copied!",
+    copy_this_prompt: "Copy this:",
+    print_btn: "Print / Save as PDF",
+    log_event_heading: "Log an event",
+    log_type_service: "Service performed",
+    log_type_tyres: "Tyres installed",
+    log_type_part: "Part replaced",
+    log_type_odometer: "Odometer reading",
+    log_desc_placeholder: "What happened, e.g. Changed engine oil",
+    log_odo_placeholder: "Odometer (km)",
+    log_domain_placeholder: "Logging as a verified workshop? domain, e.g. skoor.ee (optional)",
+    log_btn: "Log event",
+    describe_what_happened: "Describe what happened.",
+    odometer_required: "Odometer value required.",
+    signed_in_mechanic_hint: "Signed in as mechanic {name} at {domain} in this browser -- events logged with this domain will be verified and attributed to you automatically.",
+    signed_in_owner_hint: "Signed in as {domain} in this browser -- events logged with this domain will be verified automatically.",
+    timeline_heading: "Timeline",
+    verify_integrity_btn: "Verify history integrity",
+    verify_checking: "Fetching the raw log and checking it in this browser…",
+    verify_never_synced: "Not yet synced to this provider -- nothing to verify yet.",
+    verify_no_events: "No events yet -- nothing to verify.",
+    verify_ok: "✓ All {count} event(s) verified -- hash chain intact. Computed independently in this browser from the raw export, not trusted from the server's own reading of it.",
+    verify_problems: "⚠ {count} problem(s) found: {problems}",
+    verify_error: "Could not verify: {msg}",
+    no_events_yet: "No events yet.",
+    print_truncated: "Showing the latest {limit} of {total} events -- full history at {url}.",
+    export_link: "Export raw NDJSON",
+    pending_badge_title: "Saved in this browser, not yet sent to the provider",
+    pending_badge: "⟳ pending",
+    failed_badge: "⚠ failed",
+    verified_badge_title: "Domain-verified producer",
+    details_btn: "Details",
+    hide_details_btn: "Hide details",
+    loading_ellipsis: "Loading…",
+    discard_confirm: "Discard this event? It was never sent to the provider, and this can't be undone.",
+    discard_btn: "Discard",
+    could_not_load_details: "Could not load details: {msg}",
+    no_such_passport: "No such passport on this provider.",
+    could_not_load_passport: "Could not load passport: HTTP {status}",
+    offline_no_cache: "Offline, and no cached copy of this passport in this browser yet.",
+
+    register_workshop_heading: "Register a workshop",
+    register_workshop_intro: "Prove control of a domain (the same way ACME/Let's Encrypt does, via a DNS TXT record) to bind a workshop identity to it. No account, no approval queue -- a machine check, run on demand (see {link}).",
+    ws_domain_placeholder: "domain, e.g. skoor.ee",
+    ws_name_placeholder: "workshop name (optional)",
+    ws_register_btn: "Register",
+    ws_domain_invalid: 'Enter a real domain, e.g. "skoor.ee".',
+    ws_existing_link: "check its status",
+    ws_already_registered: "Already registered a domain? {link}.",
+    ws_domain_prompt: "Domain to look up:",
+    ws_no_such_workshop: 'No workshop registered for "{domain}" on this provider yet.',
+    ws_register_it_link: "Register it",
+    ws_http_error: "HTTP {status}",
+    ws_field_domain: "Domain",
+    ws_field_status: "Status",
+    ws_status_verified: "✓ Verified",
+    ws_status_pending: "Pending verification",
+    ws_verified_note: "{badge} since {time}. Events logged with {code} from a signed-in session get stamped {code2} automatically (and attributed by name, if it's a mechanic's session).",
+    ws_unverified_note: "Not verified yet. Add this DNS record, then check again -- propagation can take a few minutes:",
+    ws_check_now_btn: "Check now",
+    ws_checking_dns: "Checking DNS…",
+    ws_anyone_can_verify: 'Anyone who can add a DNS record for this domain can run this check -- there\'s no separate "verifier" role or approval queue, same as ACME/Let\'s Encrypt.',
+    ws_dns_check_failed: "DNS check failed: {msg}",
+    ws_not_found_yet: "Not found yet (saw: {found}). DNS can take a few minutes to propagate -- try again shortly.",
+    ws_signed_in_owner: "{staleNote}This browser is signed in as the {strong}workshop owner{strongEnd} for {domain}.",
+    ws_signed_in_mechanic: "{staleNote}This browser is signed in as mechanic {strong}{name}{strongEnd} at {domain}. Events logged from here will be attributed to you by name automatically.",
+    ws_signout_btn: "Sign out",
+    ws_signin_heading: "Sign in",
+    ws_signin_note: "{staleNote}Enter your email -- any address at {strong}{domain}{strongEnd} signs in as the workshop owner; a mechanic's email signs in as that mechanic. The same box works for both; whichever it matches decides your role. No secret to remember.",
+    ws_verify_domain_first: "{staleNote}Verify the domain above before anyone can sign in.",
+    ws_stale_session_note: "This browser's saved sign-in no longer works (it may have expired, or the owner email/a mechanic may have changed) -- signed out. ",
+    ws_mechanics_heading: "Mechanics",
+    ws_mechanics_note: "Add a mechanic by email -- they sign in with it via a one-time code, same as you just did, no secret to hand over. Name is just a label (defaults to the email if left blank). Removing someone doesn't touch any event they already produced.",
+    ws_mechanics_none: "none yet",
+    ws_mech_email_placeholder: "mechanic email",
+    ws_mech_name_placeholder: "name (optional)",
+    ws_mech_add_btn: "Add",
+    ws_mech_remove_btn: "Remove",
+    ws_register_another: "Register another domain",
+    ws_enter_email: "Enter your email.",
+    ws_enter_domain_email: "Enter an email.",
+  },
+  et: {
+    nav_passport_home: "Sõidupassi avaleht",
+    nav_register_workshop: "Registreeri töökoda",
+    nav_not_signed_in: "Pole sisse logitud",
+    nav_sign_in: "Logi sisse",
+    nav_sign_out: "logi välja",
+    nav_mechanic_at: "mehaanik {name} @ {domain}",
+    nav_workshop_owner_at: "töökoja omanik @ {domain}",
+
+    otp_email_placeholder: "sinu e-post",
+    otp_send_code: "Saada kood",
+    otp_code_placeholder: "6-kohaline kood",
+    otp_verify: "Kinnita",
+    otp_enter_email: "Sisesta oma e-posti aadress.",
+    otp_check_email: "Kontrolli oma e-posti, koodi saamiseks.",
+    otp_enter_code: "Sisesta e-kirjas saadud kood.",
+    error_prefix: "Viga: {msg}",
+
+    home_title: "Avatud Sõiduki Pass",
+    home_intro: "URL-is pole sõidupassi ID-d. Skanni kleebist ({code}) või loo selle teenusepakkujaga uus sõidupass:",
+    home_create_btn: "Loo uus sõidupass",
+    home_fresh_note: "Värskel sõidupassil pole veel sõiduki andmeid -- ID ise ongi identiteet; VIN ja kõik muu lisatakse hiljem sündmustena (OpenDiagist, kinnitatud töökojast või mistahes muust allikast).",
+    home_scan_heading: "Skanni QR-koodi",
+    home_scan_btn: "Skanni QR-koodi",
+    home_scan_cancel: "Tühista",
+    home_open_heading: "Ava olemasolev sõidupass",
+    home_open_intro: "Kaotasid kleebise või lingi? Kleebi sõidupassi ID või täielik URL -- mõlemad toimivad.",
+    home_open_placeholder: "sõidupassi ID või https://.../p/<uuid>",
+    home_open_btn: "Ava",
+    home_open_invalid: "See ei näi olevat sõidupassi ID ega link.",
+    scan_loading: "QR-koodi lugeja laadimine…",
+    scan_camera_error: "Kaamerale ei pääsenud ligi: {msg}",
+    scan_point_camera: "Suuna kaamera sõidupassi kleebisele…",
+    scan_not_passport: "QR-kood skannitud, kuid see pole sõidupassi link.",
+    scan_decoder_error: "QR-koodi lugejat ei õnnestunud laadida",
+
+    passport_default_heading: "Sõiduki pass",
+    sync_errors: "⚠ {count} sündmus(t) ei õnnestunud sünkroonida. ",
+    retry_btn: "Proovi uuesti",
+    sync_needs_signin: "Pole veel sünkroonitud -- logi allpool sisse, et pilve saata.",
+    sync_offline_pending: "⚠ Võrguühenduseta — {count} ootel. ",
+    sync_try_now: "Proovi kohe sünkroonida",
+    sync_offline_cached: "⚠ Võrguühenduseta — kuvatakse selle brauseri viimane salvestatud koopia.",
+    sync_pending: "⟳ {count} ootel — ",
+    sync_syncing: "sünkroonimine…",
+    sync_will_sync: "sünkroonitakse, kui ühendus taastub",
+    sync_now_btn: "Sünkrooni kohe",
+    sync_never: "Pole veel ühegi teenusepakkujaga sünkroonitud — alusta lisades teavet või sündmuse ülalpool.",
+    sync_done: "✓ Sünkroonitud",
+    signed_in_as: "(sisse logitud kui {email} · {link})",
+    signin_box_note: "Teabe lisamine ja sündmuste logimine töötab täiesti võrguühenduseta, sisselogimist pole vaja -- sisselogimine on vajalik ainult sõidupassi pilve saatmiseks. Iga e-post sobib, see tõestab vaid, et kontrollid seda: ühekordne kood, ilma paroolita. Töökoja mehaanik või omanik peaks sisse logima {em}selle töökoja enda lehelt{emEnd}, et saada kinnitatud omistus -- see kast annab alati ainult tavalise isikliku identiteedi.",
+    printed_at: "Prinditud {time} — täielik ajalugu: {url}",
+    field_vin: "VIN",
+    field_not_set: "(pole määratud)",
+    field_mileage: "Läbisõit",
+    field_mileage_unknown: "teadmata",
+    field_open_faults: "Avatud vead",
+    edit_vehicle_info_toggle: "Muuda sõiduki andmeid",
+    edit_vehicle_info_hide: "Peida",
+    edit_vehicle_info_note: "Lisa või paranda VIN/mark/mudel/aasta -- lisab {code} sündmuse; algset loomissündmust ei muudeta kunagi.",
+    vin_placeholder: "VIN",
+    make_placeholder: "Mark",
+    model_placeholder: "Mudel",
+    year_placeholder: "Aasta",
+    save_btn: "Salvesta",
+    enter_one_field: "Sisesta vähemalt üks väli.",
+    qr_caption: "sõidupassi kleebis (skanni selle lehe avamiseks)",
+    copy_link_btn: "Kopeeri link",
+    copied_btn: "Kopeeritud!",
+    copy_this_prompt: "Kopeeri see:",
+    print_btn: "Prindi / Salvesta PDF-ina",
+    log_event_heading: "Logi sündmus",
+    log_type_service: "Hooldus tehtud",
+    log_type_tyres: "Rehvid paigaldatud",
+    log_type_part: "Osa vahetatud",
+    log_type_odometer: "Läbisõidunäit",
+    log_desc_placeholder: "Mis juhtus, nt õlivahetus",
+    log_odo_placeholder: "Läbisõit (km)",
+    log_domain_placeholder: "Logid kinnitatud töökojana? domeen, nt skoor.ee (valikuline)",
+    log_btn: "Logi sündmus",
+    describe_what_happened: "Kirjelda, mis juhtus.",
+    odometer_required: "Läbisõidu väärtus on kohustuslik.",
+    signed_in_mechanic_hint: "Sisse logitud mehaanikuna {name} töökojas {domain} selles brauseris -- selle domeeniga logitud sündmused kinnitatakse ja omistatakse sulle automaatselt.",
+    signed_in_owner_hint: "Sisse logitud kui {domain} selles brauseris -- selle domeeniga logitud sündmused kinnitatakse automaatselt.",
+    timeline_heading: "Ajajoon",
+    verify_integrity_btn: "Kontrolli ajaloo terviklikkust",
+    verify_checking: "Toore logi laadimine ja kontrollimine selles brauseris…",
+    verify_never_synced: "Pole veel selle teenusepakkujaga sünkroonitud -- pole midagi kontrollida.",
+    verify_no_events: "Sündmusi pole veel -- pole midagi kontrollida.",
+    verify_ok: "✓ Kõik {count} sündmust kontrollitud -- räsiahel on terve. Arvutatud iseseisvalt selles brauseris, ei usaldata serveri enda lugemist.",
+    verify_problems: "⚠ Leiti {count} probleem(i): {problems}",
+    verify_error: "Ei õnnestunud kontrollida: {msg}",
+    no_events_yet: "Sündmusi pole veel.",
+    print_truncated: "Näidatakse viimast {limit} sündmust {total}-st -- täielik ajalugu aadressil {url}.",
+    export_link: "Ekspordi toores NDJSON",
+    pending_badge_title: "Salvestatud selles brauseris, teenusepakkujale veel saatmata",
+    pending_badge: "⟳ ootel",
+    failed_badge: "⚠ ebaõnnestus",
+    verified_badge_title: "Domeeni kaudu kinnitatud tootja",
+    details_btn: "Detailid",
+    hide_details_btn: "Peida detailid",
+    loading_ellipsis: "Laadimine…",
+    discard_confirm: "Kas loobuda sellest sündmusest? Seda ei saadetud kunagi teenusepakkujale ja seda ei saa tagasi võtta.",
+    discard_btn: "Loobu",
+    could_not_load_details: "Detaile ei õnnestunud laadida: {msg}",
+    no_such_passport: "Sellel teenusepakkujal ei ole sellist sõidupassi.",
+    could_not_load_passport: "Sõidupassi ei õnnestunud laadida: HTTP {status}",
+    offline_no_cache: "Võrguühenduseta ja selles brauseris pole veel selle sõidupassi vahemälukoopiat.",
+
+    register_workshop_heading: "Registreeri töökoda",
+    register_workshop_intro: "Tõesta domeeni üle kontrolli (samamoodi nagu ACME/Let's Encrypt, DNS TXT kirje kaudu), et siduda töökoja identiteet sellega. Kontot ega kinnitusjärjekorda pole -- masinkontroll, käivitub nõudmisel (vt {link}).",
+    ws_domain_placeholder: "domeen, nt skoor.ee",
+    ws_name_placeholder: "töökoja nimi (valikuline)",
+    ws_register_btn: "Registreeri",
+    ws_domain_invalid: 'Sisesta korrektne domeen, nt "skoor.ee".',
+    ws_existing_link: "kontrolli selle olekut",
+    ws_already_registered: "Kas domeen on juba registreeritud? {link}.",
+    ws_domain_prompt: "Otsitav domeen:",
+    ws_no_such_workshop: 'Domeenile "{domain}" pole selles teenusepakkujas veel töökoda registreeritud.',
+    ws_register_it_link: "Registreeri see",
+    ws_http_error: "HTTP {status}",
+    ws_field_domain: "Domeen",
+    ws_field_status: "Olek",
+    ws_status_verified: "✓ Kinnitatud",
+    ws_status_pending: "Kinnitamine pooleli",
+    ws_verified_note: "{badge} alates {time}. Sisse logitud sessiooniga {code} domeeniga logitud sündmused märgitakse automaatselt {code2} (ja omistatakse nime järgi, kui tegu on mehaaniku sessiooniga).",
+    ws_unverified_note: "Veel kinnitamata. Lisa see DNS-kirje ja kontrolli uuesti -- levimine võib võtta paar minutit:",
+    ws_check_now_btn: "Kontrolli kohe",
+    ws_checking_dns: "DNS-i kontrollimine…",
+    ws_anyone_can_verify: "Igaüks, kes saab sellele domeenile DNS-kirje lisada, saab seda kontrolli käivitada -- eraldi \"kinnitaja\" rolli ega kinnitusjärjekorda pole, samamoodi nagu ACME/Let's Encrypt puhul.",
+    ws_dns_check_failed: "DNS-i kontroll ebaõnnestus: {msg}",
+    ws_not_found_yet: "Ei leitud veel (leitud: {found}). DNS-i levimine võib võtta paar minutit -- proovi peagi uuesti.",
+    ws_signed_in_owner: "{staleNote}See brauser on sisse logitud kui {strong}töökoja omanik{strongEnd} töökojale {domain}.",
+    ws_signed_in_mechanic: "{staleNote}See brauser on sisse logitud mehaanikuna {strong}{name}{strongEnd} töökojas {domain}. Siit logitud sündmused omistatakse sulle automaatselt nime järgi.",
+    ws_signout_btn: "Logi välja",
+    ws_signin_heading: "Logi sisse",
+    ws_signin_note: "{staleNote}Sisesta oma e-post -- iga aadress domeenil {strong}{domain}{strongEnd} logib sisse töökoja omanikuna; mehaaniku e-post logib sisse selle mehaanikuna. Sama kast töötab mõlemal juhul; roll määratakse vastavuse järgi. Salasõna pole vaja meeles pidada.",
+    ws_verify_domain_first: "{staleNote}Enne sisselogimist kinnita ülalolev domeen.",
+    ws_stale_session_note: "Selle brauseri salvestatud sisselogimine enam ei toimi (see võis aeguda või omaniku e-post/mehaanik võis muutuda) -- logiti välja. ",
+    ws_mechanics_heading: "Mehaanikud",
+    ws_mechanics_note: "Lisa mehaanik e-posti järgi -- nad logivad sisse ühekordse koodiga, samamoodi nagu sina äsja tegid, ilma salasõnata. Nimi on lihtsalt silt (vaikimisi e-post, kui tühjaks jätta). Kellegi eemaldamine ei puuduta sündmusi, mida ta juba lisas.",
+    ws_mechanics_none: "veel ühtegi",
+    ws_mech_email_placeholder: "mehaaniku e-post",
+    ws_mech_name_placeholder: "nimi (valikuline)",
+    ws_mech_add_btn: "Lisa",
+    ws_mech_remove_btn: "Eemalda",
+    ws_register_another: "Registreeri teine domeen",
+    ws_enter_email: "Sisesta oma e-posti aadress.",
+    ws_enter_domain_email: "Sisesta e-post.",
+  },
+};
+const SUPPORTED_LANGS = ["en", "et"];
+const LANG_KEY = "ovp_lang";
+function getLang() {
+  const stored = localStorage.getItem(LANG_KEY);
+  if (stored && SUPPORTED_LANGS.includes(stored)) return stored;
+  // Best-effort browser-language guess, not a hard requirement -- falls
+  // back to English for anything unrecognized rather than guessing wrong.
+  const browserLang = (navigator.language || "en").slice(0, 2).toLowerCase();
+  return SUPPORTED_LANGS.includes(browserLang) ? browserLang : "en";
+}
+function setLang(lang) {
+  localStorage.setItem(LANG_KEY, lang);
+}
+function t(key, vars) {
+  const str = (I18N[getLang()] && I18N[getLang()][key]) ?? I18N.en[key] ?? key;
+  if (!vars) return str;
+  return str.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m));
+}
+
 // None of these input rows are real <form> elements (just flex divs), so
 // Enter did nothing by default -- wire each group's inputs to click its
 // own button instead. Safe to call for ids that don't exist on the
@@ -136,12 +469,12 @@ async function copyToClipboard(text, btn) {
   } catch {
     // clipboard API needs a secure context/permission; fall back to a
     // manual select so the user can still Cmd/Ctrl-C it themselves.
-    prompt("Copy this:", text);
+    prompt(t("copy_this_prompt"), text);
     return;
   }
   if (btn) {
     const original = btn.textContent;
-    btn.textContent = "Copied!";
+    btn.textContent = t("copied_btn");
     setTimeout(() => { btn.textContent = original; }, 1500);
   }
 }
@@ -213,11 +546,11 @@ function renderAuthStatus() {
   const us = getUserSession();
   const parts = [];
   if (ws) parts.push(ws.role === "mechanic"
-    ? `mechanic ${esc(ws.name || ws.domain)} @ ${esc(ws.domain)}`
-    : `workshop owner @ ${esc(ws.domain)}`);
+    ? t("nav_mechanic_at", { name: esc(ws.name || ws.domain), domain: esc(ws.domain) })
+    : t("nav_workshop_owner_at", { domain: esc(ws.domain) }));
   if (us) parts.push(esc(us.email));
   if (!parts.length) {
-    el.innerHTML = `Not signed in · <a href="#" id="nav-signin-toggle">Sign in</a>`;
+    el.innerHTML = `${t("nav_not_signed_in")} · <a href="#" id="nav-signin-toggle">${t("nav_sign_in")}</a>`;
     document.getElementById("nav-signin-toggle").onclick = (e) => {
       e.preventDefault();
       const box = document.getElementById("nav-signin-box");
@@ -225,7 +558,7 @@ function renderAuthStatus() {
     };
     return;
   }
-  el.innerHTML = `${parts.join(" · ")} <a href="#" id="auth-signout-link">sign out</a>`;
+  el.innerHTML = `${parts.join(" · ")} <a href="#" id="auth-signout-link">${t("nav_sign_out")}</a>`;
   document.getElementById("auth-signout-link").onclick = (e) => {
     e.preventDefault();
     clearWorkshopSession();
@@ -243,15 +576,15 @@ function initNavSignin() {
   requestBtn.onclick = async () => {
     const status = document.getElementById("nav-otp-status");
     const email = document.getElementById("nav-otp-email").value.trim();
-    if (!email) { status.textContent = "Enter your email."; return; }
+    if (!email) { status.textContent = t("otp_enter_email"); return; }
     requestBtn.disabled = true;
     const rr = await api("/v1/auth/otp/request", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email }),
     });
     requestBtn.disabled = false;
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
-    status.textContent = "Check your email for a code.";
+    if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
+    status.textContent = t("otp_check_email");
     document.getElementById("nav-otp-code-row").style.display = "flex";
   };
   const verifyBtn = document.getElementById("nav-otp-verify-btn");
@@ -259,14 +592,14 @@ function initNavSignin() {
     const status = document.getElementById("nav-otp-status");
     const email = document.getElementById("nav-otp-email").value.trim();
     const code = document.getElementById("nav-otp-code").value.trim();
-    if (!code) { status.textContent = "Enter the code from your email."; return; }
+    if (!code) { status.textContent = t("otp_enter_code"); return; }
     verifyBtn.disabled = true;
     const rr = await api("/v1/auth/otp/verify", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email, code }),
     });
     verifyBtn.disabled = false;
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
     setUserSession(email, rr.body.token);
     document.getElementById("nav-signin-box").style.display = "none";
     document.getElementById("nav-otp-email").value = "";
@@ -278,6 +611,29 @@ function initNavSignin() {
   };
   enterSubmits(["nav-otp-email"], "nav-otp-request-btn");
   enterSubmits(["nav-otp-code"], "nav-otp-verify-btn");
+}
+
+// Everything outside #app (nav links, the nav sign-in box) lives in the
+// static HTML shell, not a render() function -- so a language switch
+// needs its own pass to update it, separate from re-running main().
+function applyStaticTranslations() {
+  document.getElementById("nav-home-link").textContent = t("nav_passport_home");
+  document.getElementById("nav-workshop-link").textContent = t("nav_register_workshop");
+  document.getElementById("nav-otp-email").placeholder = t("otp_email_placeholder");
+  document.getElementById("nav-otp-request-btn").textContent = t("otp_send_code");
+  document.getElementById("nav-otp-code").placeholder = t("otp_code_placeholder");
+  document.getElementById("nav-otp-verify-btn").textContent = t("otp_verify");
+}
+
+function initLangSelect() {
+  const sel = document.getElementById("lang-select");
+  sel.value = getLang();
+  sel.onchange = () => {
+    setLang(sel.value);
+    applyStaticTranslations();
+    renderAuthStatus();
+    main();
+  };
 }
 
 async function api(path, opts) {
@@ -460,12 +816,12 @@ async function showEventDetail(id, idx, detailEl, btn) {
   if (detailEl.dataset.open === "1") {
     detailEl.dataset.open = "0";
     detailEl.style.display = "none";
-    btn.textContent = "Details";
+    btn.textContent = t("details_btn");
     return;
   }
   btn.disabled = true;
   detailEl.style.display = "block";
-  detailEl.innerHTML = `<p class="qr-caption">Loading…</p>`;
+  detailEl.innerHTML = `<p class="qr-caption">${t("loading_ellipsis")}</p>`;
   try {
     const row = currentTimelineRows[idx];
     let raw = row.raw;
@@ -481,9 +837,9 @@ async function showEventDetail(id, idx, detailEl, btn) {
     }
     detailEl.innerHTML = `<pre class="event-detail">${esc(JSON.stringify(raw, null, 2))}</pre>`;
     detailEl.dataset.open = "1";
-    btn.textContent = "Hide details";
+    btn.textContent = t("hide_details_btn");
   } catch (e) {
-    detailEl.innerHTML = `<p class="error">Could not load details: ${esc(e.message)}</p>`;
+    detailEl.innerHTML = `<p class="error">${t("could_not_load_details", { msg: esc(e.message) })}</p>`;
   } finally {
     btn.disabled = false;
   }
@@ -529,7 +885,7 @@ function ensureJsQR() {
     const s = document.createElement("script");
     s.src = "/jsqr.bundle.js";
     s.onload = resolve;
-    s.onerror = () => reject(new Error("could not load the QR decoder"));
+    s.onerror = () => reject(new Error(t("scan_decoder_error")));
     document.head.appendChild(s);
   });
 }
@@ -537,14 +893,14 @@ function ensureJsQR() {
 async function startScan(statusEl) {
   const useNative = "BarcodeDetector" in window;
   if (!useNative) {
-    statusEl.textContent = "Loading QR decoder…";
+    statusEl.textContent = t("scan_loading");
     try { await ensureJsQR(); } catch (e) { statusEl.textContent = e.message; return; }
   }
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
   } catch (e) {
-    statusEl.textContent = `Could not access the camera: ${e.message || e.name}`;
+    statusEl.textContent = t("scan_camera_error", { msg: e.message || e.name });
     return;
   }
   scanStream = stream;
@@ -554,7 +910,7 @@ async function startScan(statusEl) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   const detector = useNative ? new BarcodeDetector({ formats: ["qr_code"] }) : null;
-  statusEl.textContent = "Point the camera at a passport sticker…";
+  statusEl.textContent = t("scan_point_camera");
 
   const tick = async () => {
     if (!scanStream) return; // stopped
@@ -577,7 +933,7 @@ async function startScan(statusEl) {
       const uuid = extractPassportUuid(value);
       stopScan();
       if (uuid) { location.href = `/p/${uuid}`; }
-      else { statusEl.textContent = "Scanned a QR code, but it's not a passport link."; }
+      else { statusEl.textContent = t("scan_not_passport"); }
       return;
     }
     scanRAF = requestAnimationFrame(tick);
@@ -590,36 +946,32 @@ function renderHome(app) {
   // provider's own website is a real entry point, not just a viewer
   // for passports created elsewhere (the desktop app, curl, etc).
   app.innerHTML = `
-    <h1>Open Vehicle Passport</h1>
-    <p>No passport id in the URL. Scan a sticker (<code>/p/&lt;uuid&gt;</code>),
-    or create a new passport with this provider:</p>
-    <button id="create-btn">Create a new passport</button>
+    <h1>${t("home_title")}</h1>
+    <p>${t("home_intro", { code: "<code>/p/&lt;uuid&gt;</code>" })}</p>
+    <button id="create-btn">${t("home_create_btn")}</button>
     <p id="create-status" class="error"></p>
-    <p>A fresh passport has no vehicle data yet -- the id itself is the
-    identity; VIN and everything else gets added later as events (from
-    OpenDiag, a verified workshop, or any other producer).</p>
+    <p>${t("home_fresh_note")}</p>
 
-    <h2>Scan a QR code</h2>
-    <button id="scan-btn">Scan a QR code</button>
+    <h2>${t("home_scan_heading")}</h2>
+    <button id="scan-btn">${t("home_scan_btn")}</button>
     <div id="scan-area" style="display:none">
       <video id="scan-video" style="width:100%;max-width:360px;border-radius:8px;display:block;margin:0.5rem 0;" playsinline muted></video>
       <p id="scan-status" class="qr-caption"></p>
-      <button id="scan-cancel-btn">Cancel</button>
+      <button id="scan-cancel-btn">${t("home_scan_cancel")}</button>
     </div>
 
-    <h2>Open an existing passport</h2>
-    <p>Lost the sticker or the link? Paste the passport id, or the full URL --
-    either works.</p>
+    <h2>${t("home_open_heading")}</h2>
+    <p>${t("home_open_intro")}</p>
     <div class="row">
-      <input id="open-id" placeholder="passport id, or https://.../p/<uuid>">
-      <button id="open-btn">Open</button>
+      <input id="open-id" placeholder="${esc(t("home_open_placeholder"))}">
+      <button id="open-btn">${t("home_open_btn")}</button>
     </div>
     <p id="open-status" class="error"></p>`;
   document.getElementById("create-btn").onclick = createPassport;
   document.getElementById("open-btn").onclick = () => {
     const status = document.getElementById("open-status");
     const uuid = extractPassportUuid(document.getElementById("open-id").value.trim());
-    if (!uuid) { status.textContent = "That doesn't look like a passport id or link."; return; }
+    if (!uuid) { status.textContent = t("home_open_invalid"); return; }
     location.href = `/p/${uuid}`;
   };
   enterSubmits(["open-id"], "open-btn");
@@ -644,7 +996,7 @@ async function renderPassport(app, id) {
     const r = await api(`/v1/passports/${id}`);
     if (r.status === 404) {
       if (!isKnownLocal(id)) {
-        app.innerHTML = "<p class='error'>No such passport on this provider.</p>";
+        app.innerHTML = `<p class='error'>${t("no_such_passport")}</p>`;
         return;
       }
       // Minted entirely client-side (see createPassport) and never
@@ -655,7 +1007,7 @@ async function renderPassport(app, id) {
       state = { event_count: 0 };
       neverSynced = true;
     } else if (!r.ok) {
-      app.innerHTML = `<p class="error">Could not load passport: HTTP ${r.status}</p>`;
+      app.innerHTML = `<p class="error">${t("could_not_load_passport", { status: r.status })}</p>`;
       return;
     } else {
       state = r.body;
@@ -679,7 +1031,7 @@ async function renderPassport(app, id) {
         state = { event_count: 0 };
         neverSynced = true;
       } else {
-        app.innerHTML = "<p class='error'>Offline, and no cached copy of this passport in this browser yet.</p>";
+        app.innerHTML = `<p class='error'>${t("offline_no_cache")}</p>`;
         return;
       }
     } else {
@@ -727,7 +1079,7 @@ async function renderPassport(app, id) {
     if (od && (!mileageState || od[0] > mileageState.value)) mileageState = { value: od[0], unit: od[1] };
   }
   const desc = [v.modelYear, v.make, v.model].filter(Boolean).map(esc).join(" ");
-  const mileage = mileageState ? `${esc(mileageState.value)} ${esc(mileageState.unit)}` : "unknown";
+  const mileage = mileageState ? `${esc(mileageState.value)} ${esc(mileageState.unit)}` : t("field_mileage_unknown");
 
   const outboxTimeline = outbox.map(item => ({
     at: item.ev.occurredAt, type: item.ev.type, producer: item.ev.producer?.name,
@@ -742,21 +1094,21 @@ async function renderPassport(app, id) {
     .slice().sort((a, b) => (a.at || "").localeCompare(b.at || "")).reverse();
   currentTimelineRows = combined;
 
-  const timeline = combined.map((t, idx) => {
+  const timeline = combined.map((row, idx) => {
     let badge = "";
-    if (t.error) {
-      badge = `<span class="badge-error" title="${esc(t.error)}">⚠ failed</span> ` +
-        `<button class="no-print discard-btn" data-evid="${esc(t.evId)}">Discard</button>`;
-    } else if (t.pending) {
-      badge = `<span class="badge-pending" title="Saved in this browser, not yet sent to the provider">⟳ pending</span>`;
-    } else if (t.producerVerified) {
-      badge = `<span class="badge-verified" title="Domain-verified producer">✓ ${esc(t.producerDomain)}</span>`;
+    if (row.error) {
+      badge = `<span class="badge-error" title="${esc(row.error)}">${t("failed_badge")}</span> ` +
+        `<button class="no-print discard-btn" data-evid="${esc(row.evId)}">${t("discard_btn")}</button>`;
+    } else if (row.pending) {
+      badge = `<span class="badge-pending" title="${esc(t("pending_badge_title"))}">${t("pending_badge")}</span>`;
+    } else if (row.producerVerified) {
+      badge = `<span class="badge-verified" title="${esc(t("verified_badge_title"))}">✓ ${esc(row.producerDomain)}</span>`;
     }
-    return `<div class="timeline-item"><time datetime="${esc(t.at)}" title="${esc(t.at)} (UTC/as recorded)">${fmtTime(t.at)}</time><br>
-     <strong>${esc(t.type)}</strong>${t.producer ? " — " + esc(t.producer) : ""}${badge}
-     <button class="no-print details-btn" data-idx="${idx}">Details</button>
+    return `<div class="timeline-item"><time datetime="${esc(row.at)}" title="${esc(row.at)} (UTC/as recorded)">${fmtTime(row.at)}</time><br>
+     <strong>${esc(row.type)}</strong>${row.producer ? " — " + esc(row.producer) : ""}${badge}
+     <button class="no-print details-btn" data-idx="${idx}">${t("details_btn")}</button>
      <div class="event-detail-panel" id="detail-${idx}" style="display:none"></div></div>`;
-  }).join("") || "<p>No events yet.</p>";
+  }).join("") || `<p>${t("no_events_yet")}</p>`;
 
   const faults = (state.open_faults || []).map(f =>
     `<li>${esc(f.module)} ${esc(f.code)} — ${esc(f.text)}</li>`
@@ -778,98 +1130,92 @@ async function renderPassport(app, id) {
   // right now doesn't mean there's nothing queued, and that's exactly the
   // "3 commits ahead, can't reach origin" case this status line is for.
   let syncStatus;
-  if (errorCount) syncStatus = `⚠ ${errorCount} event(s) failed to sync. <button id="sync-now-btn">Retry</button>`;
-  else if (needsSignIn) syncStatus = `Not yet synced -- sign in below to push to a provider.`;
-  else if (offlineLoad && pendingCount) syncStatus = `⚠ Offline — ${pendingCount} pending. ` +
-    `<button id="sync-now-btn">Try syncing now</button>`;
-  else if (offlineLoad) syncStatus = `⚠ Offline — showing the last copy this browser saved.`;
-  else if (pendingCount) syncStatus = `⟳ ${pendingCount} pending — ` +
-    `${navigator.onLine ? "syncing…" : "will sync when back online"} <button id="sync-now-btn">Sync now</button>`;
-  else if (neverSynced || !isRegistered(id)) syncStatus = `Not yet synced to any provider — ` +
-    `add info or log an event above to start.`;
-  else syncStatus = `✓ Synced`;
+  if (errorCount) syncStatus = t("sync_errors", { count: errorCount }) + `<button id="sync-now-btn">${t("retry_btn")}</button>`;
+  else if (needsSignIn) syncStatus = t("sync_needs_signin");
+  else if (offlineLoad && pendingCount) syncStatus = t("sync_offline_pending", { count: pendingCount }) +
+    `<button id="sync-now-btn">${t("sync_try_now")}</button>`;
+  else if (offlineLoad) syncStatus = t("sync_offline_cached");
+  else if (pendingCount) syncStatus = t("sync_pending", { count: pendingCount }) +
+    `${navigator.onLine ? t("sync_syncing") : t("sync_will_sync")} <button id="sync-now-btn">${t("sync_now_btn")}</button>`;
+  else if (neverSynced || !isRegistered(id)) syncStatus = t("sync_never");
+  else syncStatus = t("sync_done");
   // A signed-in personal identity is a quiet fact, not the headline --
   // shown the same way regardless of which branch above fired.
-  if (userSession) syncStatus += ` <span class="qr-caption">(signed in as ${esc(userSession.email)} · ` +
-    `<a href="#" id="user-signout-link">sign out</a>)</span>`;
+  if (userSession) syncStatus += ` <span class="qr-caption">${t("signed_in_as", {
+    email: esc(userSession.email), link: `<a href="#" id="user-signout-link">${t("nav_sign_out")}</a>` })}</span>`;
 
   app.innerHTML = `
-    <h1>${desc || "Vehicle passport"}</h1>
+    <h1>${desc || t("passport_default_heading")}</h1>
     <p id="sync-status" class="sync-status no-print">${syncStatus}</p>
     ${needsSignIn ? `
     <div class="no-print" id="user-signin-box">
-      <p class="qr-caption">Adding info and logging events works fully offline, no login needed --
-      signing in is only for pushing this passport to a cloud provider. Any email works,
-      just to prove you control it: a one-time code, no password. A workshop's mechanic or
-      owner should sign in from <em>that workshop's own page</em> instead, to get
-      verified attribution -- this box only ever grants a plain personal identity.</p>
+      <p class="qr-caption">${t("signin_box_note", { em: "<em>", emEnd: "</em>" })}</p>
       <div class="row">
-        <input id="user-otp-email" type="email" placeholder="your email" style="flex:1">
-        <button id="user-otp-request-btn">Send code</button>
+        <input id="user-otp-email" type="email" placeholder="${esc(t("otp_email_placeholder"))}" style="flex:1">
+        <button id="user-otp-request-btn">${t("otp_send_code")}</button>
       </div>
       <div class="row" id="user-otp-code-row" style="display:none">
-        <input id="user-otp-code" placeholder="6-digit code" style="max-width:9rem">
-        <button id="user-otp-verify-btn">Verify</button>
+        <input id="user-otp-code" placeholder="${esc(t("otp_code_placeholder"))}" style="max-width:9rem">
+        <button id="user-otp-verify-btn">${t("otp_verify")}</button>
       </div>
       <p id="user-otp-status" class="error"></p>
     </div>` : ""}
-    <p class="print-only qr-caption">Printed ${fmtTime(new Date().toISOString())} &mdash; full history: ${esc(location.href)}</p>
+    <p class="print-only qr-caption">${t("printed_at", { time: fmtTime(new Date().toISOString()), url: esc(location.href) })}</p>
     <div class="card">
-      <div class="field">VIN</div><div>${esc(v.vin) || "(not set)"}</div>
-      <div class="field">Mileage</div><div>${mileage}</div>
-      ${faults ? `<div class="field">Open faults</div><ul>${faults}</ul>` : ""}
+      <div class="field">${t("field_vin")}</div><div>${esc(v.vin) || t("field_not_set")}</div>
+      <div class="field">${t("field_mileage")}</div><div>${mileage}</div>
+      ${faults ? `<div class="field">${t("field_open_faults")}</div><ul>${faults}</ul>` : ""}
     </div>
-    <p class="no-print"><button id="vehicle-edit-toggle-btn">Edit vehicle info</button></p>
+    <p class="no-print"><button id="vehicle-edit-toggle-btn">${t("edit_vehicle_info_toggle")}</button></p>
     <div class="no-print" id="vehicle-edit-box" style="display:none">
-      <p>Add or correct VIN/make/model/year -- appends a <code>VehicleIdentified</code>
-      event; the original genesis event is never touched.</p>
+      <p>${t("edit_vehicle_info_note", { code: "<code>VehicleIdentified</code>" })}</p>
       <div class="row">
-        <input id="edit-vin" placeholder="VIN" value="${esc(v.vin || "")}">
-        <input id="edit-make" placeholder="Make" value="${esc(v.make || "")}">
-        <input id="edit-model" placeholder="Model" value="${esc(v.model || "")}">
-        <input id="edit-year" placeholder="Year" style="width:5rem" value="${esc(v.modelYear || "")}">
-        <button id="edit-btn">Save</button>
+        <input id="edit-vin" placeholder="${esc(t("vin_placeholder"))}" value="${esc(v.vin || "")}">
+        <input id="edit-make" placeholder="${esc(t("make_placeholder"))}" value="${esc(v.make || "")}">
+        <input id="edit-model" placeholder="${esc(t("model_placeholder"))}" value="${esc(v.model || "")}">
+        <input id="edit-year" placeholder="${esc(t("year_placeholder"))}" style="width:5rem" value="${esc(v.modelYear || "")}">
+        <button id="edit-btn">${t("save_btn")}</button>
       </div>
       <p id="edit-status" class="error"></p>
     </div>
     <div class="qr-box"><canvas id="qr"></canvas></div>
-    <div class="qr-caption">passport sticker (scan to open this page)</div>
+    <div class="qr-caption">${t("qr_caption")}</div>
     <div class="row no-print">
       <input id="qr-link" value="${esc(location.href)}" readonly style="flex:1">
-      <button id="qr-copy-btn">Copy link</button>
-      <button id="print-btn">Print / Save as PDF</button>
+      <button id="qr-copy-btn">${t("copy_link_btn")}</button>
+      <button id="print-btn">${t("print_btn")}</button>
     </div>
 
     <div class="no-print">
-      <h2>Log an event</h2>
+      <h2>${t("log_event_heading")}</h2>
       <div class="row">
         <select id="log-type">
-          <option value="ServicePerformed">Service performed</option>
-          <option value="TyresInstalled">Tyres installed</option>
-          <option value="PartReplaced">Part replaced</option>
-          <option value="OdometerReading">Odometer reading</option>
+          <option value="ServicePerformed">${t("log_type_service")}</option>
+          <option value="TyresInstalled">${t("log_type_tyres")}</option>
+          <option value="PartReplaced">${t("log_type_part")}</option>
+          <option value="OdometerReading">${t("log_type_odometer")}</option>
         </select>
-        <input id="log-desc" placeholder="What happened, e.g. Changed engine oil">
-        <input id="log-odo" placeholder="Odometer (km)" style="width:9rem">
+        <input id="log-desc" placeholder="${esc(t("log_desc_placeholder"))}">
+        <input id="log-odo" placeholder="${esc(t("log_odo_placeholder"))}" style="width:9rem">
       </div>
       <div class="row">
-        <input id="log-domain" placeholder="Logging as a verified workshop? domain, e.g. skoor.ee (optional)">
-        <button id="log-btn">Log event</button>
+        <input id="log-domain" placeholder="${esc(t("log_domain_placeholder"))}">
+        <button id="log-btn">${t("log_btn")}</button>
       </div>
       <p id="log-session-hint" class="qr-caption"></p>
       <p id="log-status" class="error"></p>
     </div>
 
-    <h2>Timeline</h2>
+    <h2>${t("timeline_heading")}</h2>
     <p class="no-print">
-      <button id="verify-integrity-btn">Verify history integrity</button>
+      <button id="verify-integrity-btn">${t("verify_integrity_btn")}</button>
       <span id="verify-integrity-result" class="qr-caption"></span>
     </p>
     <div id="timeline-list">${timeline}</div>
     <p class="print-only qr-caption">${combined.length > PRINT_TIMELINE_LIMIT
-      ? `Showing the latest ${PRINT_TIMELINE_LIMIT} of ${combined.length} events -- full history at ${esc(location.href)}.`
+      ? t("print_truncated", { limit: PRINT_TIMELINE_LIMIT, total: combined.length, url: esc(location.href) })
       : ""}</p>
-    <p class="no-print"><a class="export" href="/v1/passports/${id}/export">Export raw NDJSON</a></p>
+    <p class="no-print"><a class="export" href="/v1/passports/${id}/export">${t("export_link")}</a></p>
   `;
 
   // Same-origin URL for this exact passport -- whichever provider is
@@ -887,7 +1233,7 @@ async function renderPassport(app, id) {
   vehicleEditToggleBtn.onclick = () => {
     const showing = vehicleEditBox.style.display !== "none";
     vehicleEditBox.style.display = showing ? "none" : "block";
-    vehicleEditToggleBtn.textContent = showing ? "Edit vehicle info" : "Hide";
+    vehicleEditToggleBtn.textContent = showing ? t("edit_vehicle_info_toggle") : t("edit_vehicle_info_hide");
   };
   document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
   enterSubmits(["log-desc", "log-odo", "log-domain"], "log-btn");
@@ -909,15 +1255,15 @@ async function renderPassport(app, id) {
   if (userOtpRequestBtn) userOtpRequestBtn.onclick = async () => {
     const status = document.getElementById("user-otp-status");
     const email = document.getElementById("user-otp-email").value.trim();
-    if (!email) { status.textContent = "Enter your email."; return; }
+    if (!email) { status.textContent = t("otp_enter_email"); return; }
     userOtpRequestBtn.disabled = true;
     const rr = await api("/v1/auth/otp/request", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email }),
     });
     userOtpRequestBtn.disabled = false;
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
-    status.textContent = "Check your email for a code.";
+    if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
+    status.textContent = t("otp_check_email");
     document.getElementById("user-otp-code-row").style.display = "flex";
   };
   const userOtpVerifyBtn = document.getElementById("user-otp-verify-btn");
@@ -925,14 +1271,14 @@ async function renderPassport(app, id) {
     const status = document.getElementById("user-otp-status");
     const email = document.getElementById("user-otp-email").value.trim();
     const code = document.getElementById("user-otp-code").value.trim();
-    if (!code) { status.textContent = "Enter the code from your email."; return; }
+    if (!code) { status.textContent = t("otp_enter_code"); return; }
     userOtpVerifyBtn.disabled = true;
     const rr = await api("/v1/auth/otp/verify", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email, code }),
     });
     userOtpVerifyBtn.disabled = false;
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
     setUserSession(email, rr.body.token);
     renderAuthStatus();
     renderPassport(app, id);
@@ -948,7 +1294,7 @@ async function renderPassport(app, id) {
   };
   document.querySelectorAll(".discard-btn").forEach(btn => {
     btn.onclick = () => {
-      if (confirm("Discard this event? It was never sent to the provider, and this can't be undone.")) {
+      if (confirm(t("discard_confirm"))) {
         discardOutboxItem(id, btn.dataset.evid);
       }
     };
@@ -969,8 +1315,8 @@ async function renderPassport(app, id) {
   if (session) {
     document.getElementById("log-domain").value = session.domain;
     document.getElementById("log-session-hint").textContent = session.role === "mechanic"
-      ? `Signed in as mechanic ${session.name || ""} at ${session.domain} in this browser -- events logged with this domain will be verified and attributed to you automatically.`
-      : `Signed in as ${session.domain} in this browser -- events logged with this domain will be verified automatically.`;
+      ? t("signed_in_mechanic_hint", { name: session.name || "", domain: session.domain })
+      : t("signed_in_owner_hint", { domain: session.domain });
   }
 
   // A page load is also a sync opportunity -- e.g. events queued last time
@@ -1030,14 +1376,14 @@ async function ovpfVerifyChain(events) {
 async function verifyIntegrity(id, btn, resultEl) {
   btn.disabled = true;
   resultEl.className = "qr-caption";
-  resultEl.textContent = "Fetching the raw log and checking it in this browser…";
+  resultEl.textContent = t("verify_checking");
   try {
     const resp = await fetch(`/v1/passports/${id}/export`);
     if (resp.status === 404) {
       // A locally-created, not-yet-synced passport (see createPassport)
       // has nothing to export yet -- that's not a failure, just nothing
       // to verify until it's pushed to this provider.
-      resultEl.textContent = "Not yet synced to this provider -- nothing to verify yet.";
+      resultEl.textContent = t("verify_never_synced");
       return;
     }
     if (!resp.ok) throw new Error(`export failed: HTTP ${resp.status}`);
@@ -1045,17 +1391,16 @@ async function verifyIntegrity(id, btn, resultEl) {
     const events = text.split("\n").filter(Boolean).map(l => JSON.parse(l));
     const problems = await ovpfVerifyChain(events);
     if (!events.length) {
-      resultEl.textContent = "No events yet -- nothing to verify.";
+      resultEl.textContent = t("verify_no_events");
     } else if (!problems.length) {
-      resultEl.textContent = `✓ All ${events.length} event(s) verified -- hash chain intact. ` +
-        `Computed independently in this browser from the raw export, not trusted from the server's own reading of it.`;
+      resultEl.textContent = t("verify_ok", { count: events.length });
     } else {
       resultEl.className = "error";
-      resultEl.textContent = `⚠ ${problems.length} problem(s) found: ${problems.join("; ")}`;
+      resultEl.textContent = t("verify_problems", { count: problems.length, problems: problems.join("; ") });
     }
   } catch (e) {
     resultEl.className = "error";
-    resultEl.textContent = `Could not verify: ${e.message}`;
+    resultEl.textContent = t("verify_error", { msg: e.message });
   } finally {
     btn.disabled = false;
   }
@@ -1083,7 +1428,7 @@ async function submitVehicleInfo(id) {
     model: document.getElementById("edit-model").value.trim(),
     modelYear: document.getElementById("edit-year").value.trim(),
   };
-  if (!Object.values(facts).some(Boolean)) { status.textContent = "Enter at least one field."; return; }
+  if (!Object.values(facts).some(Boolean)) { status.textContent = t("enter_one_field"); return; }
   const vehicle = { type: "Vehicle" };
   for (const [k, val] of Object.entries(facts)) if (val) vehicle[k] = val;
   const userSession = getUserSession();
@@ -1098,8 +1443,8 @@ async function submitLogEvent(id, currentVehicle) {
   const desc = document.getElementById("log-desc").value.trim();
   const odoRaw = document.getElementById("log-odo").value.trim();
   const domain = document.getElementById("log-domain").value.trim().toLowerCase();
-  if (!desc && type !== "OdometerReading") { status.textContent = "Describe what happened."; return; }
-  if (type === "OdometerReading" && !odoRaw) { status.textContent = "Odometer value required."; return; }
+  if (!desc && type !== "OdometerReading") { status.textContent = t("describe_what_happened"); return; }
+  if (type === "OdometerReading" && !odoRaw) { status.textContent = t("odometer_required"); return; }
 
   const odometer = odoRaw ? { value: Number(odoRaw), unit: "KMT" } : undefined;
   let data;
@@ -1133,48 +1478,45 @@ async function submitLogEvent(id, currentVehicle) {
 
 function renderWorkshopForm(app) {
   app.innerHTML = `
-    <h1>Register a workshop</h1>
-    <p>Prove control of a domain (the same way ACME/Let's Encrypt does, via
-    a DNS TXT record) to bind a workshop identity to it. No account, no
-    approval queue -- a machine check, run on demand (see
-    <a href="https://github.com/tooming/openvehiclepassport/blob/main/docs/TRUST.md">docs/TRUST.md</a>).</p>
+    <h1>${t("register_workshop_heading")}</h1>
+    <p>${t("register_workshop_intro", { link: '<a href="https://github.com/tooming/openvehiclepassport/blob/main/docs/TRUST.md">docs/TRUST.md</a>' })}</p>
     <div class="row">
-      <input id="ws-domain" placeholder="domain, e.g. skoor.ee">
-      <input id="ws-name" placeholder="workshop name (optional)">
-      <button id="ws-register-btn">Register</button>
+      <input id="ws-domain" placeholder="${esc(t("ws_domain_placeholder"))}">
+      <input id="ws-name" placeholder="${esc(t("ws_name_placeholder"))}">
+      <button id="ws-register-btn">${t("ws_register_btn")}</button>
     </div>
     <p id="ws-status" class="error"></p>
-    <p>Already registered a domain? <a href="#" id="ws-existing-link">check its status</a>.</p>
+    <p>${t("ws_already_registered", { link: `<a href="#" id="ws-existing-link">${t("ws_existing_link")}</a>` })}</p>
   `;
   document.getElementById("ws-register-btn").onclick = async () => {
     const status = document.getElementById("ws-status");
     const domain = document.getElementById("ws-domain").value.trim().toLowerCase();
-    if (!domain.includes(".")) { status.textContent = 'Enter a real domain, e.g. "skoor.ee".'; return; }
+    if (!domain.includes(".")) { status.textContent = t("ws_domain_invalid"); return; }
     const name = document.getElementById("ws-name").value.trim();
     const r = await api("/v1/workshops", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ domain, name }),
     });
-    if (!r.ok) { status.textContent = `Error: ${r.body?.error || r.status}`; return; }
+    if (!r.ok) { status.textContent = t("error_prefix", { msg: r.body?.error || r.status }); return; }
     location.href = `/workshop/${encodeURIComponent(r.body.domain)}`;
   };
   enterSubmits(["ws-domain", "ws-name"], "ws-register-btn");
   document.getElementById("ws-existing-link").onclick = (e) => {
     e.preventDefault();
-    const domain = prompt("Domain to look up:");
+    const domain = prompt(t("ws_domain_prompt"));
     if (domain) location.href = `/workshop/${encodeURIComponent(domain.trim().toLowerCase())}`;
   };
 }
 
 async function renderWorkshopStatus(app, domain) {
-  app.innerHTML = "Loading…";
+  app.innerHTML = t("loading_ellipsis");
   const r = await api(`/v1/workshops/${encodeURIComponent(domain)}`);
   if (r.status === 404) {
-    app.innerHTML = `<p class="error">No workshop registered for "${esc(domain)}" on this provider yet.</p>
-      <p><a href="/workshop">Register it</a>.</p>`;
+    app.innerHTML = `<p class="error">${t("ws_no_such_workshop", { domain: esc(domain) })}</p>
+      <p><a href="/workshop">${t("ws_register_it_link")}</a>.</p>`;
     return;
   }
-  if (!r.ok) { app.innerHTML = `<p class="error">HTTP ${r.status}</p>`; return; }
+  if (!r.ok) { app.innerHTML = `<p class="error">${t("ws_http_error", { status: r.status })}</p>`; return; }
   const w = r.body;
 
   // A cached role (from a previous /whoami) isn't trusted for the actual
@@ -1196,97 +1538,86 @@ async function renderWorkshopStatus(app, domain) {
     } else {
       clearWorkshopSession();
       session = null;
-      staleNote = "This browser's saved sign-in no longer works (it may have " +
-        "expired, or the owner email/a mechanic may have changed) -- signed out. ";
+      staleNote = t("ws_stale_session_note");
     }
   }
   const isOwner = !!who && who.role === "workshop";
   const isMechanic = !!who && who.role === "mechanic";
 
   const verifiedBlock = w.verified
-    ? `<p><span class="badge-verified">✓ Verified</span> since ${fmtTime(w.verifiedAt)}.
-       Events logged with <code>producer.domain: "${esc(w.domain)}"</code> from a
-       signed-in session get stamped <code>verified: true</code> automatically
-       (and attributed by name, if it's a mechanic's session).</p>`
-    : `<p>Not verified yet. Add this DNS record, then check again --
-       propagation can take a few minutes:</p>
+    ? `<p>${t("ws_verified_note", {
+        badge: '<span class="badge-verified">✓ Verified</span>', time: fmtTime(w.verifiedAt),
+        code: `<code>producer.domain: "${esc(w.domain)}"</code>`, code2: "<code>verified: true</code>" })}</p>`
+    : `<p>${t("ws_unverified_note")}</p>
        <code class="dns">Type:  TXT
 Name:  ${esc(w.dnsRecord.name)}
 Value: ${esc(w.dnsRecord.value)}</code>
-       <button id="ws-verify-btn">Check now</button>
+       <button id="ws-verify-btn">${t("ws_check_now_btn")}</button>
        <p id="ws-verify-status" class="error"></p>
-       <p class="qr-caption">Anyone who can add a DNS record for this domain can run
-       this check -- there's no separate "verifier" role or approval queue,
-       same as ACME/Let's Encrypt.</p>`;
+       <p class="qr-caption">${t("ws_anyone_can_verify")}</p>`;
 
   let identityBlock;
   if (isOwner) {
-    identityBlock = `<p>${esc(staleNote)}This browser is signed in as the
-      <strong>workshop owner</strong> for ${esc(w.domain)}.
-      <button id="ws-signout-btn">Sign out</button></p>`;
+    identityBlock = `<p>${t("ws_signed_in_owner", {
+      staleNote: esc(staleNote), strong: "<strong>", strongEnd: "</strong>", domain: esc(w.domain) })}
+      <button id="ws-signout-btn">${t("ws_signout_btn")}</button></p>`;
   } else if (isMechanic) {
-    identityBlock = `<p>${esc(staleNote)}This browser is signed in as mechanic
-      <strong>${esc(who.name)}</strong> at ${esc(w.domain)}. Events logged from
-      here will be attributed to you by name automatically.
-      <button id="ws-signout-btn">Sign out</button></p>`;
+    identityBlock = `<p>${t("ws_signed_in_mechanic", {
+      staleNote: esc(staleNote), strong: "<strong>", strongEnd: "</strong>", name: esc(who.name), domain: esc(w.domain) })}
+      <button id="ws-signout-btn">${t("ws_signout_btn")}</button></p>`;
   } else if (w.verified) {
-    identityBlock = `<h2>Sign in</h2>
-      <p>${esc(staleNote)}Enter your email -- any address at
-      <strong>${esc(w.domain)}</strong> signs in as the workshop owner; a
-      mechanic's email signs in as that mechanic. The same box works for
-      both; whichever it matches decides your role. No secret to remember.</p>
+    identityBlock = `<h2>${t("ws_signin_heading")}</h2>
+      <p>${t("ws_signin_note", {
+        staleNote: esc(staleNote), strong: "<strong>", strongEnd: "</strong>", domain: esc(w.domain) })}</p>
       <div class="row">
-        <input id="otp-email" type="email" placeholder="your email" style="flex:1">
-        <button id="otp-request-btn">Send code</button>
+        <input id="otp-email" type="email" placeholder="${esc(t("otp_email_placeholder"))}" style="flex:1">
+        <button id="otp-request-btn">${t("otp_send_code")}</button>
       </div>
       <div class="row" id="otp-code-row" style="display:none">
-        <input id="otp-code" placeholder="6-digit code" style="max-width:9rem">
-        <button id="otp-verify-btn">Verify</button>
+        <input id="otp-code" placeholder="${esc(t("otp_code_placeholder"))}" style="max-width:9rem">
+        <button id="otp-verify-btn">${t("otp_verify")}</button>
       </div>
       <p id="otp-status" class="error"></p>`;
   } else {
-    identityBlock = `<p class="qr-caption">${esc(staleNote)}Verify the domain above before anyone can sign in.</p>`;
+    identityBlock = `<p class="qr-caption">${t("ws_verify_domain_first", { staleNote: esc(staleNote) })}</p>`;
   }
 
   const mechanicsBlock = isOwner ? `
-    <h2>Mechanics</h2>
-    <p>Add a mechanic by email -- they sign in with it via a one-time code,
-    same as you just did, no secret to hand over. Name is just a label
-    (defaults to the email if left blank). Removing someone doesn't touch
-    any event they already produced.</p>
+    <h2>${t("ws_mechanics_heading")}</h2>
+    <p>${t("ws_mechanics_note")}</p>
     <ul>${(w.mechanics || []).map(m =>
-      `<li>${esc(m.name)} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">Remove</button></li>`
-    ).join("") || "<li>none yet</li>"}</ul>
+      `<li>${esc(m.name)} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">${t("ws_mech_remove_btn")}</button></li>`
+    ).join("") || `<li>${t("ws_mechanics_none")}</li>`}</ul>
     <div class="row">
-      <input id="ws-mech-email" type="email" placeholder="mechanic email">
-      <input id="ws-mech-name" placeholder="name (optional)">
-      <button id="ws-mech-add-btn">Add</button>
+      <input id="ws-mech-email" type="email" placeholder="${esc(t("ws_mech_email_placeholder"))}">
+      <input id="ws-mech-name" placeholder="${esc(t("ws_mech_name_placeholder"))}">
+      <button id="ws-mech-add-btn">${t("ws_mech_add_btn")}</button>
     </div>
     <p id="ws-mech-status" class="error"></p>` : "";
 
   app.innerHTML = `
     <h1>${esc(w.name)}</h1>
     <div class="card">
-      <div class="field">Domain</div><div>${esc(w.domain)}</div>
-      <div class="field">Status</div><div>${w.verified ? "✓ Verified" : "Pending verification"}</div>
+      <div class="field">${t("ws_field_domain")}</div><div>${esc(w.domain)}</div>
+      <div class="field">${t("ws_field_status")}</div><div>${w.verified ? t("ws_status_verified") : t("ws_status_pending")}</div>
     </div>
     ${verifiedBlock}
     ${identityBlock}
     ${mechanicsBlock}
-    <p><a href="/workshop">Register another domain</a></p>
+    <p><a href="/workshop">${t("ws_register_another")}</a></p>
   `;
 
   const verifyBtn = document.getElementById("ws-verify-btn");
   if (verifyBtn) verifyBtn.onclick = async () => {
     const status = document.getElementById("ws-verify-status");
     verifyBtn.disabled = true;
-    status.textContent = "Checking DNS…";
+    status.textContent = t("ws_checking_dns");
     const vr = await api(`/v1/workshops/${encodeURIComponent(domain)}/verify`, { method: "POST" });
-    if (!vr.ok) { status.textContent = `Error: ${vr.body?.error || vr.status}`; verifyBtn.disabled = false; return; }
+    if (!vr.ok) { status.textContent = t("error_prefix", { msg: vr.body?.error || vr.status }); verifyBtn.disabled = false; return; }
     if (vr.body.verified) { renderWorkshopStatus(app, domain); return; }
     status.textContent = vr.body.checkError
-      ? `DNS check failed: ${vr.body.checkError}`
-      : `Not found yet (saw: ${JSON.stringify(vr.body.found || [])}). DNS can take a few minutes to propagate -- try again shortly.`;
+      ? t("ws_dns_check_failed", { msg: vr.body.checkError })
+      : t("ws_not_found_yet", { found: JSON.stringify(vr.body.found || []) });
     verifyBtn.disabled = false;
   };
 
@@ -1294,15 +1625,15 @@ Value: ${esc(w.dnsRecord.value)}</code>
   if (otpRequestBtn) otpRequestBtn.onclick = async () => {
     const status = document.getElementById("otp-status");
     const email = document.getElementById("otp-email").value.trim();
-    if (!email) { status.textContent = "Enter your email."; return; }
+    if (!email) { status.textContent = t("ws_enter_email"); return; }
     otpRequestBtn.disabled = true;
     const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/otp/request`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email }),
     });
     otpRequestBtn.disabled = false;
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
-    status.textContent = rr.body.note || "Check your email for a code.";
+    if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
+    status.textContent = rr.body.note || t("otp_check_email");
     document.getElementById("otp-code-row").style.display = "flex";
   };
   const otpVerifyBtn = document.getElementById("otp-verify-btn");
@@ -1310,14 +1641,14 @@ Value: ${esc(w.dnsRecord.value)}</code>
     const status = document.getElementById("otp-status");
     const email = document.getElementById("otp-email").value.trim();
     const code = document.getElementById("otp-code").value.trim();
-    if (!code) { status.textContent = "Enter the code from your email."; return; }
+    if (!code) { status.textContent = t("otp_enter_code"); return; }
     otpVerifyBtn.disabled = true;
     const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/otp/verify`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ email, code }),
     });
     otpVerifyBtn.disabled = false;
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
     setWorkshopSession(w.domain, rr.body.token,
       { role: rr.body.role, name: rr.body.name, mechanicId: rr.body.mechanicId });
     renderAuthStatus();
@@ -1338,13 +1669,13 @@ Value: ${esc(w.dnsRecord.value)}</code>
     const status = document.getElementById("ws-mech-status");
     const email = document.getElementById("ws-mech-email").value.trim();
     const name = document.getElementById("ws-mech-name").value.trim();
-    if (!email) { status.textContent = "Enter an email."; return; }
+    if (!email) { status.textContent = t("ws_enter_domain_email"); return; }
     const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
       body: JSON.stringify({ email, name }),
     });
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
     renderWorkshopStatus(app, domain);
   };
   enterSubmits(["ws-mech-email", "ws-mech-name"], "ws-mech-add-btn");
@@ -1354,7 +1685,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
       const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics/${encodeURIComponent(btn.dataset.id)}`, {
         method: "DELETE", headers: { authorization: `Bearer ${session.token}` },
       });
-      if (!rr.ok) { alert(`Error: ${rr.body?.error || rr.status}`); return; }
+      if (!rr.ok) { alert(t("error_prefix", { msg: rr.body?.error || rr.status })); return; }
       renderWorkshopStatus(app, domain);
     };
   });
@@ -1376,6 +1707,8 @@ async function main() {
   return renderHome(app);
 }
 initNavSignin();
+initLangSelect();
+applyStaticTranslations();
 main();
 </script>
 </body>
