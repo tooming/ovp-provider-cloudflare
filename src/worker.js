@@ -496,6 +496,15 @@ async function sendEmail(env, to, subject, text) {
   return sendEmailPostmark(env, to, subject, text);
 }
 
+// A real-looking User-Agent, not fetch()'s Workers-runtime default --
+// found live (AWS side, via Python's urllib, same class of bug): a
+// provider sitting behind Cloudflare's edge with bot-fight-style rules
+// enabled can reject a generic/default UA outright with a bare
+// "error code: 1010", no JSON body at all. Applied here too for parity,
+// since either provider's email API could end up behind similar
+// protection even though only one is Cloudflare-fronted today.
+const OUTBOUND_USER_AGENT = "OpenVehiclePassport/1.0 (+https://openvehiclepassport.org)";
+
 async function sendEmailPostmark(env, to, subject, text) {
   if (!env.POSTMARK_API_TOKEN) throw new Error("POSTMARK_API_TOKEN not configured on this provider");
   const resp = await fetch("https://api.postmarkapp.com/email", {
@@ -504,13 +513,14 @@ async function sendEmailPostmark(env, to, subject, text) {
       "X-Postmark-Server-Token": env.POSTMARK_API_TOKEN,
       accept: "application/json",
       "content-type": "application/json",
+      "user-agent": OUTBOUND_USER_AGENT,
     },
     body: JSON.stringify({
       From: env.POSTMARK_FROM, To: to, Subject: subject, TextBody: text,
       MessageStream: "outbound",
     }),
   });
-  if (!resp.ok) throw new Error(`Postmark API returned HTTP ${resp.status}`);
+  if (!resp.ok) throw new Error(`Postmark API returned HTTP ${resp.status}: ${await resp.text()}`);
   return resp.json();
 }
 
@@ -521,12 +531,13 @@ async function sendEmailResend(env, to, subject, text) {
     headers: {
       authorization: `Bearer ${env.RESEND_API_KEY}`,
       "content-type": "application/json",
+      "user-agent": OUTBOUND_USER_AGENT,
     },
     body: JSON.stringify({
       from: env.RESEND_FROM, to: [to], subject, text,
     }),
   });
-  if (!resp.ok) throw new Error(`Resend API returned HTTP ${resp.status}`);
+  if (!resp.ok) throw new Error(`Resend API returned HTTP ${resp.status}: ${await resp.text()}`);
   return resp.json();
 }
 
