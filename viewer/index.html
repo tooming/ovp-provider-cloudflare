@@ -1660,9 +1660,11 @@ Value: ${esc(w.dnsRecord.value)}</code>
     <p id="ws-mech-status" class="error"></p>` : "";
 
   app.innerHTML = `
-    <h1>${esc(w.name)}
-      <button id="ws-favorite-btn" class="no-print">${isFavorite(w.domain, "workshop") ? t("favorite_remove_btn") : t("favorite_add_btn")}</button>
-      ${isOwner ? `<button id="ws-rename-toggle-btn" class="no-print">${t("ws_rename_btn")}</button>` : ""}</h1>
+    <h1>${esc(w.name)}</h1>
+    <div class="row no-print">
+      <button id="ws-favorite-btn">${isFavorite(w.domain, "workshop") ? t("favorite_remove_btn") : t("favorite_add_btn")}</button>
+      ${isOwner ? `<button id="ws-rename-toggle-btn">${t("ws_rename_btn")}</button>` : ""}
+    </div>
     ${isOwner ? `
     <div class="no-print" id="ws-rename-box" style="display:none">
       <div class="row">

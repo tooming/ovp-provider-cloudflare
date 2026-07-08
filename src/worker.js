@@ -411,15 +411,21 @@ async function registerWorkshop(request, env) {
     return json({ error: 'domain required, e.g. "skoor.ee"' }, 400);
   }
 
-  const existing = await getWorkshop(env, domain);
-  if (existing) return json(workshopView(existing), 200);
+  const existingEvents = await loadWorkshopEvents(env, domain);
+  if (existingEvents.length) return json(workshopView(reduceWorkshop(existingEvents)), 200);
 
-  await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopRegistered", {
+  // Build the response from the event just sealed, not a fresh KV read --
+  // env.PASSPORTS.list() (what loadWorkshopEvents/getWorkshop use) is only
+  // eventually consistent, so reading straight back after this exact
+  // write can still see zero events and crash workshopView(null). See
+  // PassportSequencer's module comment for the parallel append-ordering
+  // issue this same KV limitation causes.
+  const sealed = await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopRegistered", {
     domain, name: body.name || domain,
     verificationToken: randomToken(),
   }));
 
-  const view = workshopView(await getWorkshop(env, domain));
+  const view = workshopView(reduceWorkshop([sealed]));
   view.note = "Verify the domain via DNS (POST .../verify), then sign in any " +
     "time with any email at that domain (POST .../otp/request) to manage " +
     "mechanics.";
@@ -434,7 +440,8 @@ async function updateWorkshopName(request, env, domain) {
   // gated to someone who's since proven they hold this exact domain
   // (DNS-verified) *and* control an email on it (OTP), not left open to
   // anyone who reaches the registration endpoint first.
-  const state = await getWorkshop(env, domain);
+  const events = await loadWorkshopEvents(env, domain);
+  const state = events.length ? reduceWorkshop(events) : null;
   if (!state) return json({ error: "no such workshop registered" }, 404);
   if (!(await checkOwnerSession(state, env, request))) {
     return json({ error: "missing or invalid owner session -- sign in via OTP first" }, 403);
@@ -449,8 +456,11 @@ async function updateWorkshopName(request, env, domain) {
   const name = (body.name || "").trim();
   if (!name) return json({ error: "name required" }, 400);
 
-  await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopNameUpdated", { name }));
-  return json(workshopView(await getWorkshop(env, domain), true));
+  // See registerWorkshop's comment: fold the just-sealed event into the
+  // events already in hand rather than re-reading via KV list(), which
+  // can still race the write it's reading back.
+  const sealed = await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopNameUpdated", { name }));
+  return json(workshopView(reduceWorkshop([...events, sealed]), true));
 }
 
 async function readWorkshop(request, env, domain) {
@@ -465,7 +475,8 @@ async function readWorkshop(request, env, domain) {
 }
 
 async function verifyWorkshop(request, env, domain) {
-  const state = await getWorkshop(env, domain);
+  const events = await loadWorkshopEvents(env, domain);
+  const state = events.length ? reduceWorkshop(events) : null;
   if (!state) return json({ error: "no such workshop registered" }, 404);
   if (state.verified) return json(workshopView(state));
 
@@ -481,12 +492,15 @@ async function verifyWorkshop(request, env, domain) {
     return json({ ...workshopView(state), found });
   }
 
-  await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopDomainVerified", {}));
-  return json(workshopView(await getWorkshop(env, domain)));
+  // See registerWorkshop's comment: fold the just-sealed event into the
+  // events already in hand rather than re-reading via KV list().
+  const sealed = await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopDomainVerified", {}));
+  return json(workshopView(reduceWorkshop([...events, sealed])));
 }
 
 async function addMechanic(request, env, domain) {
-  const state = await getWorkshop(env, domain);
+  const events = await loadWorkshopEvents(env, domain);
+  const state = events.length ? reduceWorkshop(events) : null;
   if (!state) return json({ error: "no such workshop registered" }, 404);
   if (!(await checkOwnerSession(state, env, request))) {
     return json({ error: "missing or invalid owner session -- sign in via OTP first" }, 403);
@@ -502,9 +516,11 @@ async function addMechanic(request, env, domain) {
   if (!email) return json({ error: "email required" }, 400);
 
   const mechanicId = randomToken(6);
-  await appendWorkshopEvent(env, domain, newWorkshopEvent(
+  // See registerWorkshop's comment: fold the just-sealed event into the
+  // events already in hand rather than re-reading via KV list().
+  const sealed = await appendWorkshopEvent(env, domain, newWorkshopEvent(
     "WorkshopMechanicAdded", { mechanicId, email }));
-  const view = workshopView(await getWorkshop(env, domain), true);
+  const view = workshopView(reduceWorkshop([...events, sealed]), true);
   view.mechanicId = mechanicId;
   view.note = "Mechanic added. They sign in with this email via OTP -- no secret to hand over.";
   return json(view, 201);
@@ -775,14 +791,17 @@ async function whoamiWorkshop(request, env, domain) {
 }
 
 async function removeMechanic(request, env, domain, mechanicId) {
-  const state = await getWorkshop(env, domain);
+  const events = await loadWorkshopEvents(env, domain);
+  const state = events.length ? reduceWorkshop(events) : null;
   if (!state) return json({ error: "no such workshop registered" }, 404);
   if (!(await checkOwnerSession(state, env, request))) {
     return json({ error: "missing or invalid owner session -- sign in via OTP first" }, 403);
   }
-  await appendWorkshopEvent(env, domain, newWorkshopEvent(
+  // See registerWorkshop's comment: fold the just-sealed event into the
+  // events already in hand rather than re-reading via KV list().
+  const sealed = await appendWorkshopEvent(env, domain, newWorkshopEvent(
     "WorkshopMechanicRemoved", { mechanicId }));
-  return json(workshopView(await getWorkshop(env, domain), true));
+  return json(workshopView(reduceWorkshop([...events, sealed]), true));
 }
 
 async function appendEvent(request, env, id) {
