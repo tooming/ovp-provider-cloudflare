@@ -990,17 +990,18 @@ function renderHome(app) {
   // No uuid in the URL at all -- offer to mint one right here, so this
   // provider's own website is a real entry point, not just a viewer
   // for passports created elsewhere (the desktop app, curl, etc).
-  const favorites = loadFavorites();
+  // Only passport favorites here -- workshop favorites show on the
+  // workshop home page (renderWorkshopForm) instead, so each "home"
+  // surfaces the kind of favorite relevant to it.
+  const favorites = loadFavorites().filter(f => (f.kind || "passport") === "passport");
   app.innerHTML = `
     <h1>${t("home_title")}</h1>
     ${favorites.length ? `
     <h2>${t("favorites_heading")}</h2>
-    <ul>${favorites.map(f => {
-      const kind = f.kind || "passport";
-      const href = kind === "workshop" ? `/workshop/${esc(f.id)}` : `/p/${esc(f.id)}`;
-      return `<li><a href="${href}">${esc(f.label)}</a> ` +
-        `<button class="no-print favorite-remove-btn" data-id="${esc(f.id)}" data-kind="${kind}">${t("favorites_remove_btn")}</button></li>`;
-    }).join("")}</ul>` : ""}
+    <ul>${favorites.map(f =>
+      `<li><a href="/p/${esc(f.id)}">${esc(f.label)}</a> ` +
+      `<button class="no-print favorite-remove-btn" data-id="${esc(f.id)}" data-kind="passport">${t("favorites_remove_btn")}</button></li>`
+    ).join("")}</ul>` : ""}
     <p>${t("home_intro", { code: "<code>/p/&lt;uuid&gt;</code>" })}</p>
     <button id="create-btn">${t("home_create_btn")}</button>
     <p id="create-status" class="error"></p>
@@ -1541,8 +1542,17 @@ async function submitLogEvent(id, currentVehicle) {
 // --- Workshop registration + DNS verification ------------------------------
 
 function renderWorkshopForm(app) {
+  // Only workshop favorites here -- passport favorites show on the
+  // passport home page (renderHome) instead, see its own comment.
+  const favorites = loadFavorites().filter(f => f.kind === "workshop");
   app.innerHTML = `
     <h1>${t("register_workshop_heading")}</h1>
+    ${favorites.length ? `
+    <h2>${t("favorites_heading")}</h2>
+    <ul>${favorites.map(f =>
+      `<li><a href="/workshop/${esc(f.id)}">${esc(f.label)}</a> ` +
+      `<button class="no-print favorite-remove-btn" data-id="${esc(f.id)}" data-kind="workshop">${t("favorites_remove_btn")}</button></li>`
+    ).join("")}</ul>` : ""}
     <p>${t("register_workshop_intro", { link: '<a href="https://github.com/tooming/openvehiclepassport/blob/main/docs/TRUST.md">docs/TRUST.md</a>' })}</p>
     <div class="row">
       <input id="ws-domain" placeholder="${esc(t("ws_domain_placeholder"))}">
@@ -1552,6 +1562,9 @@ function renderWorkshopForm(app) {
     <p id="ws-status" class="error"></p>
     <p>${t("ws_already_registered", { link: `<a href="#" id="ws-existing-link">${t("ws_existing_link")}</a>` })}</p>
   `;
+  document.querySelectorAll(".favorite-remove-btn").forEach(btn => {
+    btn.onclick = () => { removeFavorite(btn.dataset.id, btn.dataset.kind); renderWorkshopForm(app); };
+  });
   document.getElementById("ws-register-btn").onclick = async () => {
     const status = document.getElementById("ws-status");
     const domain = document.getElementById("ws-domain").value.trim().toLowerCase();
