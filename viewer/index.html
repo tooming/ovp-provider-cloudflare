@@ -225,6 +225,9 @@ const I18N = {
     describe_what_happened: "Describe what happened.",
     odometer_required: "Odometer value required.",
     log_session_hint: "Signed in as {email}, a verified representative of {domain} -- events logged here are verified and attributed automatically.",
+    log_session_hint_personal: "Signed in as {email} -- events logged here are attributed to you.",
+    log_session_hint_required: "Sign in to log an event -- every event needs a real author, not an anonymous one.",
+    must_sign_in_to_log: "Sign in first -- every event needs a real author.",
     timeline_heading: "Timeline",
     verify_integrity_btn: "Verify history integrity",
     verify_checking: "Fetching the raw log and checking it in this browser…",
@@ -313,25 +316,25 @@ const I18N = {
     error_prefix: "Viga: {msg}",
 
     home_title: "Avatud Sõiduki Pass",
-    home_intro: "URL-is pole sõidupassi ID-d. Skanni kleebist ({code}) või loo selle teenusepakkujaga uus sõidupass:",
-    home_create_btn: "Loo uus sõidupass",
-    home_fresh_note: "Värskel sõidupassil pole veel sõiduki andmeid -- ID ise ongi identiteet; VIN ja kõik muu lisatakse hiljem sündmustena (OpenDiagist, kinnitatud töökojast või mistahes muust allikast).",
+    home_intro: "URL-is pole sõidukipassi ID-d. Skanni kleebist ({code}) või loo selle teenusepakkujaga uus sõidukipass:",
+    home_create_btn: "Loo uus sõidukipass",
+    home_fresh_note: "Värskel sõidukipassil pole veel sõiduki andmeid -- ID ise ongi identiteet; VIN ja kõik muu lisatakse hiljem sündmustena (OpenDiagist, kinnitatud töökojast või mistahes muust allikast).",
     home_scan_heading: "Skanni QR-koodi",
     home_scan_btn: "Skanni QR-koodi",
     home_scan_cancel: "Tühista",
-    home_open_heading: "Ava olemasolev sõidupass",
-    home_open_intro: "Kaotasid kleebise või lingi? Kleebi sõidupassi ID või täielik URL -- mõlemad toimivad.",
-    home_open_placeholder: "sõidupassi ID või https://.../p/<uuid>",
+    home_open_heading: "Ava olemasolev sõidukipass",
+    home_open_intro: "Kaotasid kleebise või lingi? Kleebi sõidukipassi ID või täielik URL -- mõlemad toimivad.",
+    home_open_placeholder: "sõidukipassi ID või https://.../p/<uuid>",
     home_open_btn: "Ava",
-    home_open_invalid: "See ei näi olevat sõidupassi ID ega link.",
+    home_open_invalid: "See ei näi olevat sõidukipassi ID ega link.",
     favorites_heading: "Lemmikud",
     favorites_remove_btn: "Eemalda",
     favorite_add_btn: "☆ Lisa lemmikutesse",
     favorite_remove_btn: "★ Eemalda lemmikutest",
     scan_loading: "QR-koodi lugeja laadimine…",
     scan_camera_error: "Kaamerale ei pääsenud ligi: {msg}",
-    scan_point_camera: "Suuna kaamera sõidupassi kleebisele…",
-    scan_not_passport: "QR-kood skannitud, kuid see pole sõidupassi link.",
+    scan_point_camera: "Suuna kaamera sõidukipassi kleebisele…",
+    scan_not_passport: "QR-kood skannitud, kuid see pole sõidukipassi link.",
     scan_decoder_error: "QR-koodi lugejat ei õnnestunud laadida",
 
     passport_default_heading: "Sõiduki pass",
@@ -346,7 +349,7 @@ const I18N = {
     sync_will_sync: "sünkroonitakse, kui ühendus taastub",
     sync_now_btn: "Sünkrooni kohe",
     sync_never: "Pole veel ühegi teenusepakkujaga sünkroonitud — alusta lisades teavet või sündmuse ülalpool.",
-    signin_box_note: "Teabe lisamine ja sündmuste logimine töötab täiesti võrguühenduseta, sisselogimist pole vaja -- sisselogimine on vajalik ainult sõidupassi pilve saatmiseks. Iga e-post sobib, see tõestab vaid, et kontrollid seda: ühekordne kood, ilma paroolita. Töökoja mehaanik või omanik peaks sisse logima {em}selle töökoja enda lehelt{emEnd}, et saada kinnitatud omistus -- see kast annab alati ainult tavalise isikliku identiteedi.",
+    signin_box_note: "Teabe lisamine ja sündmuste logimine töötab täiesti võrguühenduseta, sisselogimist pole vaja -- sisselogimine on vajalik ainult sõidukipassi pilve saatmiseks. Iga e-post sobib, see tõestab vaid, et kontrollid seda: ühekordne kood, ilma paroolita. Töökoja mehaanik või omanik peaks sisse logima {em}selle töökoja enda lehelt{emEnd}, et saada kinnitatud omistus -- see kast annab alati ainult tavalise isikliku identiteedi.",
     printed_at: "Prinditud {time} — täielik ajalugu: {url}",
     field_vin: "VIN",
     field_not_set: "(pole määratud)",
@@ -362,7 +365,7 @@ const I18N = {
     year_placeholder: "Aasta",
     save_btn: "Salvesta",
     enter_one_field: "Sisesta vähemalt üks väli.",
-    qr_caption: "sõidupassi kleebis (skanni selle lehe avamiseks)",
+    qr_caption: "sõidukipassi kleebis (skanni selle lehe avamiseks)",
     copy_link_btn: "Kopeeri link",
     copied_btn: "Kopeeritud!",
     copy_this_prompt: "Kopeeri see:",
@@ -378,6 +381,9 @@ const I18N = {
     describe_what_happened: "Kirjelda, mis juhtus.",
     odometer_required: "Läbisõidu väärtus on kohustuslik.",
     log_session_hint: "Sisse logitud kui {email}, domeeni {domain} kinnitatud esindaja -- siit logitud sündmused kinnitatakse ja omistatakse automaatselt.",
+    log_session_hint_personal: "Sisse logitud kui {email} -- siit logitud sündmused omistatakse sinule.",
+    log_session_hint_required: "Sündmuse logimiseks logi sisse -- igal sündmusel peab olema tegelik autor, mitte anonüümne.",
+    must_sign_in_to_log: "Logi enne sisse -- igal sündmusel peab olema tegelik autor.",
     timeline_heading: "Ajajoon",
     verify_integrity_btn: "Kontrolli ajaloo terviklikkust",
     verify_checking: "Toore logi laadimine ja kontrollimine selles brauseris…",
@@ -399,9 +405,9 @@ const I18N = {
     discard_confirm: "Kas loobuda sellest sündmusest? Seda ei saadetud kunagi teenusepakkujale ja seda ei saa tagasi võtta.",
     discard_btn: "Loobu",
     could_not_load_details: "Detaile ei õnnestunud laadida: {msg}",
-    no_such_passport: "Sellel teenusepakkujal ei ole sellist sõidupassi.",
+    no_such_passport: "Sellel teenusepakkujal ei ole sellist sõidukipassi.",
     could_not_load_passport: "Sõidupassi ei õnnestunud laadida: HTTP {status}",
-    offline_no_cache: "Võrguühenduseta ja selles brauseris pole veel selle sõidupassi vahemälukoopiat.",
+    offline_no_cache: "Võrguühenduseta ja selles brauseris pole veel selle sõidukipassi vahemälukoopiat.",
 
     register_workshop_heading: "Registreeri töökoda",
     register_workshop_intro: "Tõesta domeeni üle kontrolli (samamoodi nagu ACME/Let's Encrypt, DNS TXT kirje kaudu), et siduda töökoja identiteet sellega. Kontot ega kinnitusjärjekorda pole -- masinkontroll, käivitub nõudmisel (vt {link}).",
@@ -1386,11 +1392,18 @@ async function renderPassport(app, id) {
   // and verified -- there's nothing to type in, just a note explaining
   // why. Session is read from cache (set by the workshop status page's
   // /whoami check), not re-fetched here, so opening a passport doesn't
-  // cost an extra round trip.
+  // cost an extra round trip. A personal-only session still gets
+  // attributed (by email, unverified); no session at all means logging
+  // is blocked (see requireLogAuthor) until one exists.
   const session = getWorkshopSession();
+  const personalSession = getUserSession();
+  const hintEl = document.getElementById("log-session-hint");
   if (session) {
-    document.getElementById("log-session-hint").textContent =
-      t("log_session_hint", { email: session.email || "", domain: session.domain });
+    hintEl.textContent = t("log_session_hint", { email: session.email || "", domain: session.domain });
+  } else if (personalSession) {
+    hintEl.textContent = t("log_session_hint_personal", { email: personalSession.email });
+  } else {
+    hintEl.textContent = t("log_session_hint_required");
   }
 
   // A page load is also a sync opportunity -- e.g. events queued last time
@@ -1494,8 +1507,32 @@ function envelope(vehicleId, type, data, producer) {
   };
 }
 
+// A local edit/log with nobody signed in used to fall back to an
+// anonymous {type: "Manual", name: "web"} producer -- and since producer
+// (like recordedAt) is stamped once at creation and never rewritten
+// (see enqueueEvent/flushOutbox), signing in *afterward* couldn't fix an
+// already-queued event: it would stay authorless forever, even after
+// syncing. Every event needs a real author, same as a git commit -- so
+// both actions below now require a session (workshop or personal) to
+// even create the event, instead of quietly defaulting to "web".
+function requireLogAuthor(status) {
+  const workshopSession = getWorkshopSession();
+  const userSession = getUserSession();
+  if (!workshopSession && !userSession) {
+    status.textContent = t("must_sign_in_to_log");
+    const box = document.getElementById("nav-signin-box");
+    if (box) box.style.display = "block";
+    return null;
+  }
+  return workshopSession
+    ? { type: "Workshop", domain: workshopSession.domain }
+    : { type: "Owner", name: userSession.email };
+}
+
 async function submitVehicleInfo(id) {
   const status = document.getElementById("edit-status");
+  const producer = requireLogAuthor(status);
+  if (!producer) return;
   const facts = {
     vin: document.getElementById("edit-vin").value.trim(),
     make: document.getElementById("edit-make").value.trim(),
@@ -1505,14 +1542,25 @@ async function submitVehicleInfo(id) {
   if (!Object.values(facts).some(Boolean)) { status.textContent = t("enter_one_field"); return; }
   const vehicle = { type: "Vehicle" };
   for (const [k, val] of Object.entries(facts)) if (val) vehicle[k] = val;
-  const userSession = getUserSession();
-  const producer = userSession ? { type: "Owner", name: userSession.email } : { type: "Manual", name: "web" };
   const ev = envelope(id, "VehicleIdentified", { vehicle }, producer);
   await enqueueEvent(id, ev);
 }
 
 async function submitLogEvent(id, currentVehicle) {
   const status = document.getElementById("log-status");
+  // Attribution is automatic, never something typed in -- a signed-in
+  // workshop/mechanic session already *is* proof of domain control (see
+  // bestAuthSession/matchProducerSession server-side), so there's no
+  // separate "logging as a verified workshop?" field to fill in. The
+  // provider is still the only one who can turn this into
+  // producer.verified; submitting verified:true here would be silently
+  // stripped regardless (see docs/TRUST.md). A signed-in personal
+  // identity (no workshop session) gets attributed by email instead --
+  // not a *verified* producer, just a real name, same spirit as a git
+  // commit's author.
+  const producer = requireLogAuthor(status);
+  if (!producer) return;
+
   const type = document.getElementById("log-type").value;
   const desc = document.getElementById("log-desc").value.trim();
   const odoRaw = document.getElementById("log-odo").value.trim();
@@ -1525,27 +1573,7 @@ async function submitLogEvent(id, currentVehicle) {
   else if (type === "PartReplaced") data = { part: { type: "Product", name: desc }, odometer };
   else data = { serviceType: desc, odometer };
 
-  // Attribution is automatic, never something typed in -- a signed-in
-  // workshop/mechanic session already *is* proof of domain control (see
-  // bestAuthSession/matchProducerSession server-side), so there's no
-  // separate "logging as a verified workshop?" field to fill in. The
-  // provider is still the only one who can turn this into
-  // producer.verified; submitting verified:true here would be silently
-  // stripped regardless (see docs/TRUST.md). A signed-in personal
-  // identity (no workshop session) gets attributed by email instead of
-  // the generic "web" -- not a *verified* producer, just a real name
-  // instead of an anonymous one, same spirit as a git commit's author.
-  const workshopSession = getWorkshopSession();
-  const userSession = getUserSession();
-  const producer = workshopSession
-    ? { type: "Workshop", domain: workshopSession.domain }
-    : userSession
-      ? { type: "Owner", name: userSession.email }
-      : { type: "Manual", name: "web" };
   const ev = envelope(id, type, data, producer);
-  // Auth is resolved fresh at flush time (see bestAuthSession), not here
-  // -- this event can be queued and shown immediately with no session at
-  // all, same as any other local edit.
   await enqueueEvent(id, ev);
 }
 
