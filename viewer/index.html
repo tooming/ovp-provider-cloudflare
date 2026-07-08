@@ -289,6 +289,11 @@ const I18N = {
     ws_enter_email: "Enter your email.",
     ws_enter_domain_email: "Enter an email.",
     ws_rename_btn: "Rename",
+    ws_event_registered: "Workshop registered ({name})",
+    ws_event_verified: "Domain verified",
+    ws_event_name_updated: "Name changed to \"{name}\"",
+    ws_event_mechanic_added: "Mechanic added",
+    ws_event_mechanic_removed: "Mechanic removed",
   },
   et: {
     nav_passport_home: "Sõidupassi avaleht",
@@ -437,6 +442,11 @@ const I18N = {
     ws_enter_email: "Sisesta oma e-posti aadress.",
     ws_enter_domain_email: "Sisesta e-post.",
     ws_rename_btn: "Muuda nime",
+    ws_event_registered: "Töökoda registreeritud ({name})",
+    ws_event_verified: "Domeen kinnitatud",
+    ws_event_name_updated: "Nimi muudetud: \"{name}\"",
+    ws_event_mechanic_added: "Mehaanik lisatud",
+    ws_event_mechanic_removed: "Mehaanik eemaldatud",
   },
 };
 const SUPPORTED_LANGS = ["en", "et"];
@@ -1672,6 +1682,21 @@ Value: ${esc(w.dnsRecord.value)}</code>
     </div>
     <p id="ws-mech-status" class="error"></p>` : "";
 
+  // A workshop's own identity log (registered/verified/renamed/mechanic
+  // added or removed) -- same public visibility as the rest of this
+  // view (see reduceWorkshop/_reduce_workshop's timeline comment: a
+  // mechanicId is an opaque token, not PII).
+  const wsTimeline = (w.timeline || []).slice().reverse().map(row => {
+    let label;
+    if (row.type === "WorkshopRegistered") label = t("ws_event_registered", { name: esc(row.name) });
+    else if (row.type === "WorkshopDomainVerified") label = t("ws_event_verified");
+    else if (row.type === "WorkshopNameUpdated") label = t("ws_event_name_updated", { name: esc(row.name) });
+    else if (row.type === "WorkshopMechanicAdded") label = t("ws_event_mechanic_added");
+    else if (row.type === "WorkshopMechanicRemoved") label = t("ws_event_mechanic_removed");
+    else label = esc(row.type);
+    return `<div class="timeline-item"><time datetime="${esc(row.at)}" title="${esc(row.at)} (UTC/as recorded)">${fmtTime(row.at)}</time><br>${label}</div>`;
+  }).join("") || `<p>${t("no_events_yet")}</p>`;
+
   app.innerHTML = `
     <h1>${esc(w.name)}</h1>
     <div class="row no-print">
@@ -1693,6 +1718,8 @@ Value: ${esc(w.dnsRecord.value)}</code>
     ${verifiedBlock}
     ${identityBlock}
     ${mechanicsBlock}
+    <h2>${t("timeline_heading")}</h2>
+    <div id="ws-timeline-list">${wsTimeline}</div>
     <p><a href="/workshop">${t("ws_register_another")}</a></p>
   `;
 

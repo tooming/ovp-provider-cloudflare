@@ -160,30 +160,39 @@ async function appendWorkshopEvent(env, domain, ev) {
 
 function reduceWorkshop(events) {
   const state = { domain: null, name: null, verified: false, verifiedAt: null,
-                   verificationToken: null, mechanicsRaw: new Map() };
+                   verificationToken: null, mechanicsRaw: new Map(), timeline: [] };
   for (const ev of events) {
     const t = ev.type, d = ev.data || {};
+    // mechanicId is an opaque random token, not PII (see
+    // WorkshopMechanicAdded below) -- safe to include in a timeline
+    // shown to any visitor, same visibility as the rest of this
+    // otherwise-public workshop view.
     if (t === "WorkshopRegistered") {
       state.domain = d.domain; state.name = d.name;
       state.verificationToken = d.verificationToken;
+      state.timeline.push({ at: ev.occurredAt, type: t, name: d.name });
     } else if (t === "WorkshopDomainVerified") {
       state.verified = true; state.verifiedAt = ev.occurredAt;
+      state.timeline.push({ at: ev.occurredAt, type: t });
     } else if (t === "WorkshopMechanicAdded") {
       // No name field at all -- a mechanic's email *is* their identity
       // now (shown as-is wherever attribution matters), not a free-text
       // label someone could set to anything.
       state.mechanicsRaw.set(d.mechanicId, { email: d.email || null });
+      state.timeline.push({ at: ev.occurredAt, type: t, mechanicId: d.mechanicId });
     } else if (t === "WorkshopMechanicRemoved") {
       state.mechanicsRaw.delete(d.mechanicId);
+      state.timeline.push({ at: ev.occurredAt, type: t, mechanicId: d.mechanicId });
     } else if (t === "WorkshopNameUpdated") {
       state.name = d.name;
+      state.timeline.push({ at: ev.occurredAt, type: t, name: d.name });
     }
     // WorkshopSecretResetRequested/WorkshopSecretReset/WorkshopMechanicSecretReset/
     // WorkshopOwnerEmailClaimRequested/WorkshopOwnerEmailSet: legacy events
     // from earlier auth designs, replayed harmlessly (nothing left in
-    // current state reads them). Owner login no longer needs a claimed
-    // email at all: it's just "does this email's domain match the
-    // workshop's own domain" (see findLoginIdentity).
+    // current state reads them, including the timeline above). Owner
+    // login no longer needs a claimed email at all: it's just "does this
+    // email's domain match the workshop's own domain" (see findLoginIdentity).
   }
   // hasEmail-only by default -- an email is real PII on an otherwise-
   // unauthenticated endpoint. workshopView reveals the actual addresses
@@ -238,6 +247,7 @@ function workshopView(state, revealEmails = false) {
     verifiedAt: state.verifiedAt || null,
     verificationToken: state.verificationToken,
     mechanics,
+    timeline: state.timeline,
     dnsRecord: {
       type: "TXT",
       name: `_ovp-verify.${state.domain}`,
