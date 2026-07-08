@@ -21,16 +21,21 @@
     { "binding": "PASSPORTS", "id": "25b902565c2c451b8f87d62b3165149b" }
   ],
 
-  // POSTMARK_FROM is not a secret (just a sender address) so it lives
-  // here -- must be a Sender Signature verified with Postmark. Real
-  // secrets (POSTMARK_API_TOKEN, SESSION_SIGNING_KEY) are set with
-  // `wrangler secret put <NAME>`, never in this committed file. With
-  // POSTMARK_API_TOKEN unset, OTP email requests fail with a clear 502
-  // instead of silently going nowhere (see worker.js's sendEmail). With
-  // SESSION_SIGNING_KEY unset, OTP verification fails clearly instead of
-  // issuing an unusable session (see issueSessionToken).
+  // EMAIL_PROVIDER picks which HTTP API sendEmail dispatches to
+  // ("postmark", the default, or "resend") -- switching provider is a
+  // config change, not a code change. POSTMARK_FROM/RESEND_FROM are not
+  // secrets (just sender addresses) so they live here -- each must be a
+  // verified sender/domain with its respective provider. Real secrets
+  // (POSTMARK_API_TOKEN, RESEND_API_KEY, SESSION_SIGNING_KEY) are set
+  // with `wrangler secret put <NAME>`, never in this committed file.
+  // With the active provider's key unset, OTP email requests fail with a
+  // clear 502 instead of silently going nowhere (see worker.js's
+  // sendEmail). With SESSION_SIGNING_KEY unset, OTP verification fails
+  // clearly instead of issuing an unusable session (see issueSessionToken).
   "vars": {
-    "POSTMARK_FROM": ""
+    "EMAIL_PROVIDER": "postmark",
+    "POSTMARK_FROM": "",
+    "RESEND_FROM": ""
   },
 
   "routes": [

@@ -80,15 +80,16 @@ async function createPassport(request, env) {
 // an append-only log (key WORKSHOP#<domain>#EVENT#<recordedAt>#<id>),
 // hash-chained with the same ovpf-core.js primitives, current state always
 // a replay, never a mutated row. WorkshopRegistered / WorkshopDomainVerified
-// / WorkshopOwnerEmailClaimRequested / WorkshopOwnerEmailSet /
-// WorkshopMechanicAdded / WorkshopMechanicRemoved.
+// / WorkshopMechanicAdded / WorkshopMechanicRemoved.
 //
 // There is no standing secret anywhere in this system -- login (owner or
 // mechanic) is always OTP: prove you control an email already on file, get
-// handed a signed, time-limited session token. The only thing DNS proves
-// here is which email is *allowed* to claim the owner role in the first
-// place (domain control remains the root of trust for that) -- once
-// claimed, day-to-day sign-in never touches DNS again.
+// handed a signed, time-limited session token. Owner is structural, not
+// claimed or stored: any email whose domain matches this (verified)
+// workshop's own domain qualifies -- domain verification already proved
+// someone legitimate controls it, and the OTP proves this holder can
+// receive mail there. No separate claim step, no DNS beyond the one-time
+// domain verification.
 
 function workshopDomain(domain) {
   return (domain || "").trim().toLowerCase().replace(/\.+$/, "");
@@ -134,8 +135,7 @@ async function appendWorkshopEvent(env, domain, ev) {
 
 function reduceWorkshop(events) {
   const state = { domain: null, name: null, verified: false, verifiedAt: null,
-                   verificationToken: null, ownerEmail: null,
-                   pendingOwnerEmailClaim: null, mechanicsRaw: new Map() };
+                   verificationToken: null, mechanicsRaw: new Map() };
   for (const ev of events) {
     const t = ev.type, d = ev.data || {};
     if (t === "WorkshopRegistered") {
@@ -143,21 +143,17 @@ function reduceWorkshop(events) {
       state.verificationToken = d.verificationToken;
     } else if (t === "WorkshopDomainVerified") {
       state.verified = true; state.verifiedAt = ev.occurredAt;
-    } else if (t === "WorkshopOwnerEmailClaimRequested") {
-      state.pendingOwnerEmailClaim = { email: d.email, token: d.token };
-    } else if (t === "WorkshopOwnerEmailSet") {
-      state.ownerEmail = d.email;
-      state.pendingOwnerEmailClaim = null;
     } else if (t === "WorkshopMechanicAdded") {
       state.mechanicsRaw.set(d.mechanicId, { name: d.name, email: d.email || null });
     } else if (t === "WorkshopMechanicRemoved") {
       state.mechanicsRaw.delete(d.mechanicId);
     }
-    // WorkshopSecretResetRequested/WorkshopSecretReset/WorkshopMechanicSecretReset:
-    // legacy events from before the OTP-only redesign, replayed harmlessly
-    // (nothing left in current state reads them). A mechanic added under
-    // the old secret system with no email on file has no way to sign in
-    // anymore -- the owner needs to remove and re-add them with one.
+    // WorkshopSecretResetRequested/WorkshopSecretReset/WorkshopMechanicSecretReset/
+    // WorkshopOwnerEmailClaimRequested/WorkshopOwnerEmailSet: legacy events
+    // from earlier auth designs, replayed harmlessly (nothing left in
+    // current state reads them). Owner login no longer needs a claimed
+    // email at all: it's just "does this email's domain match the
+    // workshop's own domain" (see findLoginIdentity).
   }
   // Sanitized list for anything that goes out over the wire -- an email is
   // real PII on an otherwise-unauthenticated endpoint, unlike a first
@@ -174,12 +170,24 @@ function findMechanicByEmail(state, email) {
   return null;
 }
 
+function emailDomain(email) {
+  const at = (email || "").lastIndexOf("@");
+  return at === -1 ? null : email.slice(at + 1);
+}
+
 function findLoginIdentity(state, email) {
-  // One sign-in box, one lookup -- whichever matches (the workshop's
-  // registered owner email, or a mechanic's) decides the role.
-  if (state.ownerEmail && state.ownerEmail === email) return { role: "workshop", mechanicId: null };
+  // One sign-in box, one lookup. A specific mechanic's email is checked
+  // first -- before the domain-match fallback, since a mechanic's email
+  // is commonly at the workshop's own domain (company address) and must
+  // resolve to the *restricted* mechanic role, not silently escalate to
+  // owner. Owner is structural, not a claimed/stored value: any other
+  // email whose domain matches this (verified) workshop's own domain
+  // qualifies -- domain verification already proved someone legitimate
+  // controls it, and the OTP this login requires proves *this* holder
+  // can receive mail there.
   const mechanicId = findMechanicByEmail(state, email);
   if (mechanicId) return { role: "mechanic", mechanicId };
+  if (state.verified && emailDomain(email) === state.domain) return { role: "workshop", mechanicId: null };
   return null;
 }
 
@@ -195,7 +203,6 @@ function workshopView(state) {
     verified: !!state.verified,
     verifiedAt: state.verifiedAt || null,
     verificationToken: state.verificationToken,
-    ownerEmailSet: !!state.ownerEmail,
     mechanics: state.mechanics,
     dnsRecord: {
       type: "TXT",
@@ -295,13 +302,15 @@ async function matchProducerSession(workshop, env, token) {
   // Returns {role:"workshop"} for a valid owner session,
   // {role:"mechanic", mechanicId} for a valid mechanic session, or null.
   // Deliberately re-checks live state on every call rather than trusting
-  // the token's embedded claims: removing a mechanic, or changing the
-  // owner email, revokes any outstanding session for that identity
-  // immediately, without needing a separate revocation list.
+  // the token's embedded claims: removing a mechanic, or the workshop
+  // losing its verified status, revokes any outstanding session for
+  // that identity immediately, without needing a separate revocation
+  // list. Owner is structural, not a stored value: any email whose
+  // domain matches this (verified) workshop's own domain qualifies.
   const payload = await verifySessionToken(env, token);
   if (!payload || payload.domain !== workshop.domain) return null;
   if (payload.role === "workshop") {
-    if (payload.email && payload.email === workshop.ownerEmail) return { role: "workshop" };
+    if (workshop.verified && emailDomain(payload.email) === workshop.domain) return { role: "workshop" };
     return null;
   }
   if (payload.role === "mechanic") {
@@ -354,9 +363,9 @@ async function registerWorkshop(request, env) {
   }));
 
   const view = workshopView(await getWorkshop(env, domain));
-  view.note = "Verify the domain via DNS (POST .../verify), then claim your " +
-    "owner login email (POST .../owner-email/start) to be able to sign in " +
-    "and manage mechanics.";
+  view.note = "Verify the domain via DNS (POST .../verify), then sign in any " +
+    "time with any email at that domain (POST .../otp/request) to manage " +
+    "mechanics.";
   return json(view, 201);
 }
 
@@ -385,77 +394,6 @@ async function verifyWorkshop(request, env, domain) {
 
   await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopDomainVerified", {}));
   return json(workshopView(await getWorkshop(env, domain)));
-}
-
-async function startOwnerEmailClaim(request, env, domain) {
-  // Begin claiming (or changing) the email that's allowed to sign in as
-  // this workshop's owner, by minting a fresh, one-time DNS challenge on
-  // a name separate from the permanent verification record.
-  //
-  // Deliberately NOT reusing verifyWorkshop's check: that
-  // verificationToken is permanent and world-readable via a plain
-  // GET /v1/workshops/{domain} (needed so the owner can copy it into
-  // their DNS panel), so it stays valid and repeatable forever once
-  // added -- anyone who simply reads it back off the public API could
-  // replay it and claim owner-email rights at any time, with no proof
-  // they hold live DNS write access right now. A fresh challenge,
-  // disclosed only in this response and checked against its own DNS
-  // name, requires the caller to actually add something to DNS *after*
-  // seeing it -- exactly the same bar initial verification cleared, not
-  // a permanently-satisfied one. This is the only place DNS matters for
-  // login at all; day-to-day sign-in afterward is pure OTP.
-  const state = await getWorkshop(env, domain);
-  if (!state) return json({ error: "no such workshop registered" }, 404);
-  let body = {};
-  try {
-    const text = await request.text();
-    if (text) body = JSON.parse(text);
-  } catch {
-    return json({ error: "body must be JSON" }, 400);
-  }
-  const email = (body.email || "").trim().toLowerCase();
-  if (!email) return json({ error: "email required" }, 400);
-
-  let token;
-  const pending = state.pendingOwnerEmailClaim;
-  if (pending && pending.email === email) {
-    token = pending.token;
-  } else {
-    token = randomToken();
-    await appendWorkshopEvent(env, domain, newWorkshopEvent(
-      "WorkshopOwnerEmailClaimRequested", { email, token }));
-  }
-  return json({
-    domain, email,
-    dnsRecord: { type: "TXT", name: `_ovp-owner.${domain}`, value: `ovp-owner=${token}` },
-    note: "Add this DNS TXT record -- separate from the permanent " +
-      "verification one -- then call confirm. Remove it afterward. " +
-      "Needed once (or again if you ever change the owner email) -- " +
-      "day-to-day sign-in afterward is just OTP, no DNS involved.",
-  });
-}
-
-async function confirmOwnerEmailClaim(request, env, domain) {
-  const state = await getWorkshop(env, domain);
-  if (!state) return json({ error: "no such workshop registered" }, 404);
-  const pending = state.pendingOwnerEmailClaim;
-  if (!pending) return json({ error: "no claim in progress -- call .../owner-email/start first" }, 400);
-
-  const expected = `ovp-owner=${pending.token}`;
-  let found;
-  try {
-    found = await dnsTxtLookup(`_ovp-owner.${state.domain}`);
-  } catch (e) {
-    return json({ error: `DNS check failed: ${e}` });
-  }
-  if (!found.includes(expected)) {
-    return json({ found, dnsRecord: { type: "TXT", name: `_ovp-owner.${domain}`, value: expected } });
-  }
-
-  await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopOwnerEmailSet", { email: pending.email }));
-  return json({ email: pending.email,
-    note: "Owner email set. Sign in any time via OTP with this address. " +
-      "You can remove the _ovp-owner TXT record now." });
 }
 
 async function addMechanic(request, env, domain) {
@@ -509,12 +447,18 @@ async function checkAndConsumeOtp(env, domain, mechanicId, code) {
 }
 
 async function sendEmail(env, to, subject, text) {
-  // Thin wrapper around Postmark's HTTP API -- not a queue/retry system:
-  // an OTP is useless a minute late, so a failed send should surface
-  // immediately, not get silently swallowed. Requires POSTMARK_API_TOKEN
-  // (set via `wrangler secret put POSTMARK_API_TOKEN`) and POSTMARK_FROM;
-  // with no token configured, this throws rather than pretending to
-  // succeed.
+  // Dispatches to whichever provider env.EMAIL_PROVIDER selects
+  // ("postmark", the default, or "resend") -- switching is a config
+  // change (one var + its secret), not a code change. Not a queue/retry
+  // system: an OTP is useless a minute late, so a failed send should
+  // surface immediately, not get silently swallowed.
+  if ((env.EMAIL_PROVIDER || "postmark").toLowerCase() === "resend") {
+    return sendEmailResend(env, to, subject, text);
+  }
+  return sendEmailPostmark(env, to, subject, text);
+}
+
+async function sendEmailPostmark(env, to, subject, text) {
   if (!env.POSTMARK_API_TOKEN) throw new Error("POSTMARK_API_TOKEN not configured on this provider");
   const resp = await fetch("https://api.postmarkapp.com/email", {
     method: "POST",
@@ -529,6 +473,22 @@ async function sendEmail(env, to, subject, text) {
     }),
   });
   if (!resp.ok) throw new Error(`Postmark API returned HTTP ${resp.status}`);
+  return resp.json();
+}
+
+async function sendEmailResend(env, to, subject, text) {
+  if (!env.RESEND_API_KEY) throw new Error("RESEND_API_KEY not configured on this provider");
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from: env.RESEND_FROM, to: [to], subject, text,
+    }),
+  });
+  if (!resp.ok) throw new Error(`Resend API returned HTTP ${resp.status}`);
   return resp.json();
 }
 
@@ -718,12 +678,6 @@ export default {
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/verify$/);
     if (m && method === "POST") return verifyWorkshop(request, env, m[1]);
-
-    m = path.match(/^\/v1\/workshops\/([^/]+)\/owner-email\/start$/);
-    if (m && method === "POST") return startOwnerEmailClaim(request, env, m[1]);
-
-    m = path.match(/^\/v1\/workshops\/([^/]+)\/owner-email\/confirm$/);
-    if (m && method === "POST") return confirmOwnerEmailClaim(request, env, m[1]);
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/otp\/request$/);
     if (m && method === "POST") return requestOtp(request, env, m[1]);

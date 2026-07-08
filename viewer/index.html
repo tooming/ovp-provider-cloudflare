@@ -828,44 +828,6 @@ function renderWorkshopForm(app) {
   };
 }
 
-function renderOwnerEmailClaimChallenge(app, domain, challenge) {
-  app.innerHTML = `
-    <h1>Confirm owner email</h1>
-    <p>Add this DNS TXT record -- separate from the permanent verification
-    one -- then confirm. This proves you can write to this domain's DNS
-    <em>right now</em>, which is what earns <strong>${esc(challenge.email)}</strong>
-    the right to sign in as this workshop's owner going forward. Needed
-    once (or again if you ever change it) -- day-to-day sign-in afterward
-    is just a one-time emailed code, no DNS involved.</p>
-    <code class="dns">Type:  TXT
-Name:  ${esc(challenge.dnsRecord.name)}
-Value: ${esc(challenge.dnsRecord.value)}</code>
-    <button id="claim-confirm-btn">I've added it -- confirm</button>
-    <p id="claim-confirm-status" class="error"></p>
-    <p><a href="#" id="claim-cancel-link">Cancel</a></p>
-  `;
-  document.getElementById("claim-confirm-btn").onclick = async () => {
-    const status = document.getElementById("claim-confirm-status");
-    const btn = document.getElementById("claim-confirm-btn");
-    btn.disabled = true;
-    status.textContent = "Checking DNS…";
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/owner-email/confirm`, { method: "POST" });
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; btn.disabled = false; return; }
-    if (!rr.body.email) {
-      status.textContent = rr.body.error
-        ? `DNS check failed: ${rr.body.error}`
-        : `Not found yet (saw: ${JSON.stringify(rr.body.found || [])}). DNS can take a few minutes to propagate -- try again shortly.`;
-      btn.disabled = false;
-      return;
-    }
-    renderWorkshopStatus(app, domain);
-  };
-  document.getElementById("claim-cancel-link").onclick = (e) => {
-    e.preventDefault();
-    renderWorkshopStatus(app, domain);
-  };
-}
-
 async function renderWorkshopStatus(app, domain) {
   app.innerHTML = "Loading…";
   const r = await api(`/v1/workshops/${encodeURIComponent(domain)}`);
@@ -919,23 +881,6 @@ Value: ${esc(w.dnsRecord.value)}</code>
        this check -- there's no separate "verifier" role or approval queue,
        same as ACME/Let's Encrypt.</p>`;
 
-  // Owner sign-in only exists once an owner email is on file -- claiming
-  // (or changing) it is the one place DNS matters for login at all; every
-  // sign-in afterward, owner or mechanic, is just OTP.
-  const ownerEmailBlock = !w.ownerEmailSet
-    ? `<h2>Set up owner sign-in</h2>
-       <p>Prove which email is allowed to act as this workshop's owner --
-       one DNS proof, needed once (or again if you ever change it).</p>
-       <div class="row">
-         <input id="owner-email-input" type="email" placeholder="your email" style="flex:1">
-         <button id="owner-email-start-btn">Claim this email</button>
-       </div>
-       <p id="owner-email-status" class="error"></p>`
-    : isOwner
-      ? `<p class="qr-caption">Owner sign-in email is set.
-         <a href="#" id="owner-email-change-link">Change it</a> (needs a fresh DNS proof).</p>`
-      : "";
-
   let identityBlock;
   if (isOwner) {
     identityBlock = `<p>${esc(staleNote)}This browser is signed in as the
@@ -946,11 +891,12 @@ Value: ${esc(w.dnsRecord.value)}</code>
       <strong>${esc(who.name)}</strong> at ${esc(w.domain)}. Events logged from
       here will be attributed to you by name automatically.
       <button id="ws-signout-btn">Sign out</button></p>`;
-  } else if (w.ownerEmailSet) {
+  } else if (w.verified) {
     identityBlock = `<h2>Sign in</h2>
-      <p>${esc(staleNote)}Enter your email -- the workshop owner's, or a
-      mechanic's -- to get a one-time code. The same box works for both;
-      whichever it matches decides your role. No secret to remember.</p>
+      <p>${esc(staleNote)}Enter your email -- any address at
+      <strong>${esc(w.domain)}</strong> signs in as the workshop owner; a
+      mechanic's email signs in as that mechanic. The same box works for
+      both; whichever it matches decides your role. No secret to remember.</p>
       <div class="row">
         <input id="otp-email" type="email" placeholder="your email" style="flex:1">
         <button id="otp-request-btn">Send code</button>
@@ -961,7 +907,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
       </div>
       <p id="otp-status" class="error"></p>`;
   } else {
-    identityBlock = `<p class="qr-caption">${esc(staleNote)}Set up owner sign-in above before anyone can sign in.</p>`;
+    identityBlock = `<p class="qr-caption">${esc(staleNote)}Verify the domain above before anyone can sign in.</p>`;
   }
 
   const mechanicsBlock = isOwner ? `
@@ -987,7 +933,6 @@ Value: ${esc(w.dnsRecord.value)}</code>
       <div class="field">Status</div><div>${w.verified ? "✓ Verified" : "Pending verification"}</div>
     </div>
     ${verifiedBlock}
-    ${ownerEmailBlock}
     ${identityBlock}
     ${mechanicsBlock}
     <p><a href="/workshop">Register another domain</a></p>
@@ -1005,32 +950,6 @@ Value: ${esc(w.dnsRecord.value)}</code>
       ? `DNS check failed: ${vr.body.checkError}`
       : `Not found yet (saw: ${JSON.stringify(vr.body.found || [])}). DNS can take a few minutes to propagate -- try again shortly.`;
     verifyBtn.disabled = false;
-  };
-
-  const ownerEmailStartBtn = document.getElementById("owner-email-start-btn");
-  if (ownerEmailStartBtn) ownerEmailStartBtn.onclick = async () => {
-    const status = document.getElementById("owner-email-status");
-    const email = document.getElementById("owner-email-input").value.trim();
-    if (!email) { status.textContent = "Enter an email."; return; }
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/owner-email/start`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email }),
-    });
-    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
-    renderOwnerEmailClaimChallenge(app, domain, rr.body);
-  };
-
-  const ownerEmailChangeLink = document.getElementById("owner-email-change-link");
-  if (ownerEmailChangeLink) ownerEmailChangeLink.onclick = async (e) => {
-    e.preventDefault();
-    const email = prompt("New owner email:");
-    if (!email) return;
-    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/owner-email/start`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: email.trim() }),
-    });
-    if (!rr.ok) { alert(`Error: ${rr.body?.error || rr.status}`); return; }
-    renderOwnerEmailClaimChallenge(app, domain, rr.body);
   };
 
   const otpRequestBtn = document.getElementById("otp-request-btn");
