@@ -5,9 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Open Vehicle Passport</title>
 <style>
+  /* color-scheme alone isn't enough -- some in-app browsers (e.g. opening
+     a shared link from Messenger) don't reliably apply the UA's own
+     dark-mode default colors even when this is set, leaving body text
+     effectively unreadable against a dark wrapper. Explicit background/
+     color for both modes closes that gap regardless of what the
+     embedding browser does with color-scheme on its own. */
   :root { color-scheme: light dark; }
   body { font-family: -apple-system, system-ui, sans-serif; max-width: 640px;
-         margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+         margin: 2rem auto; padding: 0 1rem; line-height: 1.5;
+         background: #fff; color: #1a1a1a; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181c; color: #e8e8e8; }
+    a { color: #7db8f0; }
+    .row input, .row select { border-color: #ffffff40; }
+  }
   h1 { font-size: 1.4rem; }
   .field { color: #666; font-size: 0.85rem; text-transform: uppercase;
            letter-spacing: 0.03em; }
@@ -132,12 +144,11 @@ function fmtTime(iso) {
 const I18N = {
   en: {
     nav_passport_home: "Passport home",
-    nav_register_workshop: "Register a workshop",
+    nav_register_workshop: "Workshop home",
     nav_not_signed_in: "Not signed in",
     nav_sign_in: "Sign in",
     nav_sign_out: "sign out",
-    nav_mechanic_at: "mechanic {name} @ {domain}",
-    nav_workshop_owner_at: "workshop owner @ {domain}",
+    nav_workshop_identity: "{email} @ {domain}",
 
     otp_email_placeholder: "your email",
     otp_send_code: "Send code",
@@ -160,6 +171,10 @@ const I18N = {
     home_open_placeholder: "passport id, or https://.../p/<uuid>",
     home_open_btn: "Open",
     home_open_invalid: "That doesn't look like a passport id or link.",
+    favorites_heading: "Favorites",
+    favorites_remove_btn: "Remove",
+    favorite_add_btn: "☆ Add to favorites",
+    favorite_remove_btn: "★ Remove from favorites",
     scan_loading: "Loading QR decoder…",
     scan_camera_error: "Could not access the camera: {msg}",
     scan_point_camera: "Point the camera at a passport sticker…",
@@ -178,8 +193,6 @@ const I18N = {
     sync_will_sync: "will sync when back online",
     sync_now_btn: "Sync now",
     sync_never: "Not yet synced to any provider — add info or log an event above to start.",
-    sync_done: "✓ Synced",
-    signed_in_as: "(signed in as {email} · {link})",
     signin_box_note: "Adding info and logging events works fully offline, no login needed -- signing in is only for pushing this passport to a cloud provider. Any email works, just to prove you control it: a one-time code, no password. A workshop's mechanic or owner should sign in from {em}that workshop's own page{emEnd} instead, to get verified attribution -- this box only ever grants a plain personal identity.",
     printed_at: "Printed {time} — full history: {url}",
     field_vin: "VIN",
@@ -208,12 +221,10 @@ const I18N = {
     log_type_odometer: "Odometer reading",
     log_desc_placeholder: "What happened, e.g. Changed engine oil",
     log_odo_placeholder: "Odometer (km)",
-    log_domain_placeholder: "Logging as a verified workshop? domain, e.g. skoor.ee (optional)",
     log_btn: "Log event",
     describe_what_happened: "Describe what happened.",
     odometer_required: "Odometer value required.",
-    signed_in_mechanic_hint: "Signed in as mechanic {name} at {domain} in this browser -- events logged with this domain will be verified and attributed to you automatically.",
-    signed_in_owner_hint: "Signed in as {domain} in this browser -- events logged with this domain will be verified automatically.",
+    log_session_hint: "Signed in as {email}, a verified representative of {domain} -- events logged here are verified and attributed automatically.",
     timeline_heading: "Timeline",
     verify_integrity_btn: "Verify history integrity",
     verify_checking: "Fetching the raw log and checking it in this browser…",
@@ -262,32 +273,30 @@ const I18N = {
     ws_anyone_can_verify: 'Anyone who can add a DNS record for this domain can run this check -- there\'s no separate "verifier" role or approval queue, same as ACME/Let\'s Encrypt.',
     ws_dns_check_failed: "DNS check failed: {msg}",
     ws_not_found_yet: "Not found yet (saw: {found}). DNS can take a few minutes to propagate -- try again shortly.",
-    ws_signed_in_owner: "{staleNote}This browser is signed in as the {strong}workshop owner{strongEnd} for {domain}.",
-    ws_signed_in_mechanic: "{staleNote}This browser is signed in as mechanic {strong}{name}{strongEnd} at {domain}. Events logged from here will be attributed to you by name automatically.",
+    ws_signed_in_as: "{staleNote}This browser is signed in as {strong}{email}{strongEnd}, a verified representative of {domain}. Events logged from here will be attributed and verified automatically.",
     ws_signout_btn: "Sign out",
     ws_signin_heading: "Sign in",
     ws_signin_note: "{staleNote}Enter your email -- any address at {strong}{domain}{strongEnd} signs in as the workshop owner; a mechanic's email signs in as that mechanic. The same box works for both; whichever it matches decides your role. No secret to remember.",
     ws_verify_domain_first: "{staleNote}Verify the domain above before anyone can sign in.",
     ws_stale_session_note: "This browser's saved sign-in no longer works (it may have expired, or the owner email/a mechanic may have changed) -- signed out. ",
     ws_mechanics_heading: "Mechanics",
-    ws_mechanics_note: "Add a mechanic by email -- they sign in with it via a one-time code, same as you just did, no secret to hand over. Name is just a label (defaults to the email if left blank). Removing someone doesn't touch any event they already produced.",
+    ws_mechanics_note: "Add a mechanic by email -- they sign in with it via a one-time code, same as you just did, no secret to hand over. Identified by email alone, not a separate name. Removing someone doesn't touch any event they already produced.",
     ws_mechanics_none: "none yet",
     ws_mech_email_placeholder: "mechanic email",
-    ws_mech_name_placeholder: "name (optional)",
     ws_mech_add_btn: "Add",
     ws_mech_remove_btn: "Remove",
     ws_register_another: "Register another domain",
     ws_enter_email: "Enter your email.",
     ws_enter_domain_email: "Enter an email.",
+    ws_rename_btn: "Rename",
   },
   et: {
     nav_passport_home: "Sõidupassi avaleht",
-    nav_register_workshop: "Registreeri töökoda",
+    nav_register_workshop: "Töökoja avaleht",
     nav_not_signed_in: "Pole sisse logitud",
     nav_sign_in: "Logi sisse",
     nav_sign_out: "logi välja",
-    nav_mechanic_at: "mehaanik {name} @ {domain}",
-    nav_workshop_owner_at: "töökoja omanik @ {domain}",
+    nav_workshop_identity: "{email} @ {domain}",
 
     otp_email_placeholder: "sinu e-post",
     otp_send_code: "Saada kood",
@@ -310,6 +319,10 @@ const I18N = {
     home_open_placeholder: "sõidupassi ID või https://.../p/<uuid>",
     home_open_btn: "Ava",
     home_open_invalid: "See ei näi olevat sõidupassi ID ega link.",
+    favorites_heading: "Lemmikud",
+    favorites_remove_btn: "Eemalda",
+    favorite_add_btn: "☆ Lisa lemmikutesse",
+    favorite_remove_btn: "★ Eemalda lemmikutest",
     scan_loading: "QR-koodi lugeja laadimine…",
     scan_camera_error: "Kaamerale ei pääsenud ligi: {msg}",
     scan_point_camera: "Suuna kaamera sõidupassi kleebisele…",
@@ -328,8 +341,6 @@ const I18N = {
     sync_will_sync: "sünkroonitakse, kui ühendus taastub",
     sync_now_btn: "Sünkrooni kohe",
     sync_never: "Pole veel ühegi teenusepakkujaga sünkroonitud — alusta lisades teavet või sündmuse ülalpool.",
-    sync_done: "✓ Sünkroonitud",
-    signed_in_as: "(sisse logitud kui {email} · {link})",
     signin_box_note: "Teabe lisamine ja sündmuste logimine töötab täiesti võrguühenduseta, sisselogimist pole vaja -- sisselogimine on vajalik ainult sõidupassi pilve saatmiseks. Iga e-post sobib, see tõestab vaid, et kontrollid seda: ühekordne kood, ilma paroolita. Töökoja mehaanik või omanik peaks sisse logima {em}selle töökoja enda lehelt{emEnd}, et saada kinnitatud omistus -- see kast annab alati ainult tavalise isikliku identiteedi.",
     printed_at: "Prinditud {time} — täielik ajalugu: {url}",
     field_vin: "VIN",
@@ -358,12 +369,10 @@ const I18N = {
     log_type_odometer: "Läbisõidunäit",
     log_desc_placeholder: "Mis juhtus, nt õlivahetus",
     log_odo_placeholder: "Läbisõit (km)",
-    log_domain_placeholder: "Logid kinnitatud töökojana? domeen, nt skoor.ee (valikuline)",
     log_btn: "Logi sündmus",
     describe_what_happened: "Kirjelda, mis juhtus.",
     odometer_required: "Läbisõidu väärtus on kohustuslik.",
-    signed_in_mechanic_hint: "Sisse logitud mehaanikuna {name} töökojas {domain} selles brauseris -- selle domeeniga logitud sündmused kinnitatakse ja omistatakse sulle automaatselt.",
-    signed_in_owner_hint: "Sisse logitud kui {domain} selles brauseris -- selle domeeniga logitud sündmused kinnitatakse automaatselt.",
+    log_session_hint: "Sisse logitud kui {email}, domeeni {domain} kinnitatud esindaja -- siit logitud sündmused kinnitatakse ja omistatakse automaatselt.",
     timeline_heading: "Ajajoon",
     verify_integrity_btn: "Kontrolli ajaloo terviklikkust",
     verify_checking: "Toore logi laadimine ja kontrollimine selles brauseris…",
@@ -412,23 +421,22 @@ const I18N = {
     ws_anyone_can_verify: "Igaüks, kes saab sellele domeenile DNS-kirje lisada, saab seda kontrolli käivitada -- eraldi \"kinnitaja\" rolli ega kinnitusjärjekorda pole, samamoodi nagu ACME/Let's Encrypt puhul.",
     ws_dns_check_failed: "DNS-i kontroll ebaõnnestus: {msg}",
     ws_not_found_yet: "Ei leitud veel (leitud: {found}). DNS-i levimine võib võtta paar minutit -- proovi peagi uuesti.",
-    ws_signed_in_owner: "{staleNote}See brauser on sisse logitud kui {strong}töökoja omanik{strongEnd} töökojale {domain}.",
-    ws_signed_in_mechanic: "{staleNote}See brauser on sisse logitud mehaanikuna {strong}{name}{strongEnd} töökojas {domain}. Siit logitud sündmused omistatakse sulle automaatselt nime järgi.",
+    ws_signed_in_as: "{staleNote}See brauser on sisse logitud kui {strong}{email}{strongEnd}, domeeni {domain} kinnitatud esindaja. Siit logitud sündmused omistatakse ja kinnitatakse automaatselt.",
     ws_signout_btn: "Logi välja",
     ws_signin_heading: "Logi sisse",
     ws_signin_note: "{staleNote}Sisesta oma e-post -- iga aadress domeenil {strong}{domain}{strongEnd} logib sisse töökoja omanikuna; mehaaniku e-post logib sisse selle mehaanikuna. Sama kast töötab mõlemal juhul; roll määratakse vastavuse järgi. Salasõna pole vaja meeles pidada.",
     ws_verify_domain_first: "{staleNote}Enne sisselogimist kinnita ülalolev domeen.",
     ws_stale_session_note: "Selle brauseri salvestatud sisselogimine enam ei toimi (see võis aeguda või omaniku e-post/mehaanik võis muutuda) -- logiti välja. ",
     ws_mechanics_heading: "Mehaanikud",
-    ws_mechanics_note: "Lisa mehaanik e-posti järgi -- nad logivad sisse ühekordse koodiga, samamoodi nagu sina äsja tegid, ilma salasõnata. Nimi on lihtsalt silt (vaikimisi e-post, kui tühjaks jätta). Kellegi eemaldamine ei puuduta sündmusi, mida ta juba lisas.",
+    ws_mechanics_note: "Lisa mehaanik e-posti järgi -- nad logivad sisse ühekordse koodiga, samamoodi nagu sina äsja tegid, ilma salasõnata. Tuvastatakse ainult e-posti järgi, mitte eraldi nime järgi. Kellegi eemaldamine ei puuduta sündmusi, mida ta juba lisas.",
     ws_mechanics_none: "veel ühtegi",
     ws_mech_email_placeholder: "mehaaniku e-post",
-    ws_mech_name_placeholder: "nimi (valikuline)",
     ws_mech_add_btn: "Lisa",
     ws_mech_remove_btn: "Eemalda",
     ws_register_another: "Registreeri teine domeen",
     ws_enter_email: "Sisesta oma e-posti aadress.",
     ws_enter_domain_email: "Sisesta e-post.",
+    ws_rename_btn: "Muuda nime",
   },
 };
 const SUPPORTED_LANGS = ["en", "et"];
@@ -545,9 +553,10 @@ function renderAuthStatus() {
   const ws = getWorkshopSession();
   const us = getUserSession();
   const parts = [];
-  if (ws) parts.push(ws.role === "mechanic"
-    ? t("nav_mechanic_at", { name: esc(ws.name || ws.domain), domain: esc(ws.domain) })
-    : t("nav_workshop_owner_at", { domain: esc(ws.domain) }));
+  // No "mechanic"/"owner" label -- these emails are just verified
+  // representatives of the domain/workshop, not named individuals with
+  // a role to announce in the corner of every page.
+  if (ws) parts.push(t("nav_workshop_identity", { email: esc(ws.email || ""), domain: esc(ws.domain) }));
   if (us) parts.push(esc(us.email));
   if (!parts.length) {
     el.innerHTML = `${t("nav_not_signed_in")} · <a href="#" id="nav-signin-toggle">${t("nav_sign_in")}</a>`;
@@ -679,6 +688,32 @@ function isKnownLocal(id) { return localStorage.getItem(knownLocalKey(id)) === "
 function registeredKey(id) { return `ovp_registered_${id}`; }
 function markRegistered(id) { localStorage.setItem(registeredKey(id), "1"); }
 function isRegistered(id) { return localStorage.getItem(registeredKey(id)) === "1"; }
+
+// Favorites are purely a local bookmark list -- there's no server-side
+// concept of "my passports" (there's no account to hang one off of, see
+// the whole local-first/OTP-only design elsewhere in this file), just a
+// quick way back to specific passports from the home page without
+// re-scanning a sticker or re-pasting an id/link every time. label is a
+// best-effort snapshot of the description at the moment it was favorited
+// (not kept live-updated -- it's just there so the home page list isn't
+// a wall of bare uuids).
+const FAVORITES_KEY = "ovp_favorites";
+function loadFavorites() {
+  try { return JSON.parse(localStorage.getItem(FAVORITES_KEY)) || []; } catch { return []; }
+}
+function saveFavorites(items) {
+  if (items.length) localStorage.setItem(FAVORITES_KEY, JSON.stringify(items));
+  else localStorage.removeItem(FAVORITES_KEY);
+}
+function isFavorite(id) { return loadFavorites().some(f => f.id === id); }
+function addFavorite(id, label) {
+  const items = loadFavorites().filter(f => f.id !== id);
+  items.unshift({ id, label: label || id, addedAt: Date.now() });
+  saveFavorites(items);
+}
+function removeFavorite(id) {
+  saveFavorites(loadFavorites().filter(f => f.id !== id));
+}
 
 // A just-synced event can still be briefly invisible in a fresh GET --
 // Cloudflare KV's list() is only eventually consistent (documented
@@ -945,8 +980,15 @@ function renderHome(app) {
   // No uuid in the URL at all -- offer to mint one right here, so this
   // provider's own website is a real entry point, not just a viewer
   // for passports created elsewhere (the desktop app, curl, etc).
+  const favorites = loadFavorites();
   app.innerHTML = `
     <h1>${t("home_title")}</h1>
+    ${favorites.length ? `
+    <h2>${t("favorites_heading")}</h2>
+    <ul>${favorites.map(f =>
+      `<li><a href="/p/${esc(f.id)}">${esc(f.label)}</a> ` +
+      `<button class="no-print favorite-remove-btn" data-id="${esc(f.id)}">${t("favorites_remove_btn")}</button></li>`
+    ).join("")}</ul>` : ""}
     <p>${t("home_intro", { code: "<code>/p/&lt;uuid&gt;</code>" })}</p>
     <button id="create-btn">${t("home_create_btn")}</button>
     <p id="create-status" class="error"></p>
@@ -975,6 +1017,9 @@ function renderHome(app) {
     location.href = `/p/${uuid}`;
   };
   enterSubmits(["open-id"], "open-btn");
+  document.querySelectorAll(".favorite-remove-btn").forEach(btn => {
+    btn.onclick = () => { removeFavorite(btn.dataset.id); renderHome(app); };
+  });
   document.getElementById("scan-btn").onclick = () => {
     document.getElementById("scan-area").style.display = "block";
     document.getElementById("scan-btn").style.display = "none";
@@ -1104,8 +1149,13 @@ async function renderPassport(app, id) {
     } else if (row.producerVerified) {
       badge = `<span class="badge-verified" title="${esc(t("verified_badge_title"))}">✓ ${esc(row.producerDomain)}</span>`;
     }
+    // Skip the plain "— producer" text once the badge already shows the
+    // verified domain -- older events (before producer.name stopped
+    // being set to the domain for workshop attribution) would otherwise
+    // print the same domain twice on one line.
+    const producerText = (row.producer && !row.producerVerified) ? " — " + esc(row.producer) : "";
     return `<div class="timeline-item"><time datetime="${esc(row.at)}" title="${esc(row.at)} (UTC/as recorded)">${fmtTime(row.at)}</time><br>
-     <strong>${esc(row.type)}</strong>${row.producer ? " — " + esc(row.producer) : ""}${badge}
+     <strong>${esc(row.type)}</strong>${producerText}${badge}
      <button class="no-print details-btn" data-idx="${idx}">${t("details_btn")}</button>
      <div class="event-detail-panel" id="detail-${idx}" style="display:none"></div></div>`;
   }).join("") || `<p>${t("no_events_yet")}</p>`;
@@ -1138,15 +1188,14 @@ async function renderPassport(app, id) {
   else if (pendingCount) syncStatus = t("sync_pending", { count: pendingCount }) +
     `${navigator.onLine ? t("sync_syncing") : t("sync_will_sync")} <button id="sync-now-btn">${t("sync_now_btn")}</button>`;
   else if (neverSynced || !isRegistered(id)) syncStatus = t("sync_never");
-  else syncStatus = t("sync_done");
-  // A signed-in personal identity is a quiet fact, not the headline --
-  // shown the same way regardless of which branch above fired.
-  if (userSession) syncStatus += ` <span class="qr-caption">${t("signed_in_as", {
-    email: esc(userSession.email), link: `<a href="#" id="user-signout-link">${t("nav_sign_out")}</a>` })}</span>`;
+  // Fully synced, nothing pending, nothing wrong -- nothing to say. Who's
+  // signed in is already shown once, in the nav; repeating it here (this
+  // used to append "(signed in as ...)") was just the same fact twice.
+  else syncStatus = "";
 
   app.innerHTML = `
     <h1>${desc || t("passport_default_heading")}</h1>
-    <p id="sync-status" class="sync-status no-print">${syncStatus}</p>
+    ${syncStatus ? `<p id="sync-status" class="sync-status no-print">${syncStatus}</p>` : ""}
     ${needsSignIn ? `
     <div class="no-print" id="user-signin-box">
       <p class="qr-caption">${t("signin_box_note", { em: "<em>", emEnd: "</em>" })}</p>
@@ -1184,6 +1233,7 @@ async function renderPassport(app, id) {
       <input id="qr-link" value="${esc(location.href)}" readonly style="flex:1">
       <button id="qr-copy-btn">${t("copy_link_btn")}</button>
       <button id="print-btn">${t("print_btn")}</button>
+      <button id="favorite-btn">${isFavorite(id) ? t("favorite_remove_btn") : t("favorite_add_btn")}</button>
     </div>
 
     <div class="no-print">
@@ -1197,9 +1247,6 @@ async function renderPassport(app, id) {
         </select>
         <input id="log-desc" placeholder="${esc(t("log_desc_placeholder"))}">
         <input id="log-odo" placeholder="${esc(t("log_odo_placeholder"))}" style="width:9rem">
-      </div>
-      <div class="row">
-        <input id="log-domain" placeholder="${esc(t("log_domain_placeholder"))}">
         <button id="log-btn">${t("log_btn")}</button>
       </div>
       <p id="log-session-hint" class="qr-caption"></p>
@@ -1226,6 +1273,11 @@ async function renderPassport(app, id) {
   document.getElementById("qr-copy-btn").onclick = () =>
     copyToClipboard(location.href, document.getElementById("qr-copy-btn"));
   document.getElementById("print-btn").onclick = () => window.print();
+  document.getElementById("favorite-btn").onclick = () => {
+    const btn = document.getElementById("favorite-btn");
+    if (isFavorite(id)) { removeFavorite(id); btn.textContent = t("favorite_add_btn"); }
+    else { addFavorite(id, desc || t("passport_default_heading")); btn.textContent = t("favorite_remove_btn"); }
+  };
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
   enterSubmits(["edit-vin", "edit-make", "edit-model", "edit-year"], "edit-btn");
   const vehicleEditToggleBtn = document.getElementById("vehicle-edit-toggle-btn");
@@ -1236,7 +1288,7 @@ async function renderPassport(app, id) {
     vehicleEditToggleBtn.textContent = showing ? t("edit_vehicle_info_toggle") : t("edit_vehicle_info_hide");
   };
   document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
-  enterSubmits(["log-desc", "log-odo", "log-domain"], "log-btn");
+  enterSubmits(["log-desc", "log-odo"], "log-btn");
   document.getElementById("verify-integrity-btn").onclick = () => verifyIntegrity(
     id, document.getElementById("verify-integrity-btn"), document.getElementById("verify-integrity-result"));
 
@@ -1306,17 +1358,16 @@ async function renderPassport(app, id) {
     };
   });
 
-  // If this browser is signed in as a workshop (or a specific mechanic at
-  // one), default the domain field to it -- one less thing to type every
-  // time you log real work. Role/name are read from the cached session
-  // (set by the workshop status page's /whoami check), not re-fetched
-  // here, so opening a passport doesn't cost an extra round trip.
+  // If this browser is signed in as a workshop (owner or a specific
+  // mechanic), every event logged from here is automatically attributed
+  // and verified -- there's nothing to type in, just a note explaining
+  // why. Session is read from cache (set by the workshop status page's
+  // /whoami check), not re-fetched here, so opening a passport doesn't
+  // cost an extra round trip.
   const session = getWorkshopSession();
   if (session) {
-    document.getElementById("log-domain").value = session.domain;
-    document.getElementById("log-session-hint").textContent = session.role === "mechanic"
-      ? t("signed_in_mechanic_hint", { name: session.name || "", domain: session.domain })
-      : t("signed_in_owner_hint", { domain: session.domain });
+    document.getElementById("log-session-hint").textContent =
+      t("log_session_hint", { email: session.email || "", domain: session.domain });
   }
 
   // A page load is also a sync opportunity -- e.g. events queued last time
@@ -1442,7 +1493,6 @@ async function submitLogEvent(id, currentVehicle) {
   const type = document.getElementById("log-type").value;
   const desc = document.getElementById("log-desc").value.trim();
   const odoRaw = document.getElementById("log-odo").value.trim();
-  const domain = document.getElementById("log-domain").value.trim().toLowerCase();
   if (!desc && type !== "OdometerReading") { status.textContent = t("describe_what_happened"); return; }
   if (type === "OdometerReading" && !odoRaw) { status.textContent = t("odometer_required"); return; }
 
@@ -1452,18 +1502,20 @@ async function submitLogEvent(id, currentVehicle) {
   else if (type === "PartReplaced") data = { part: { type: "Product", name: desc }, odometer };
   else data = { serviceType: desc, odometer };
 
-  // producer.domain is just this client's claim -- the provider is the
-  // only one who can turn that into producer.verified, and only if this
-  // request also proves it holds that workshop's secret (see
-  // docs/TRUST.md). Submitting verified:true here would be silently
-  // stripped server-side regardless. A signed-in personal identity (no
-  // domain claim) gets attributed by email instead of the generic "web"
-  // -- it's not a *verified* producer (nothing checks a personal OTP
-  // proves anything about the vehicle itself), just a real name instead
-  // of an anonymous one, same spirit as a git commit's author.
+  // Attribution is automatic, never something typed in -- a signed-in
+  // workshop/mechanic session already *is* proof of domain control (see
+  // bestAuthSession/matchProducerSession server-side), so there's no
+  // separate "logging as a verified workshop?" field to fill in. The
+  // provider is still the only one who can turn this into
+  // producer.verified; submitting verified:true here would be silently
+  // stripped regardless (see docs/TRUST.md). A signed-in personal
+  // identity (no workshop session) gets attributed by email instead of
+  // the generic "web" -- not a *verified* producer, just a real name
+  // instead of an anonymous one, same spirit as a git commit's author.
+  const workshopSession = getWorkshopSession();
   const userSession = getUserSession();
-  const producer = domain
-    ? { type: "Workshop", domain, name: domain }
+  const producer = workshopSession
+    ? { type: "Workshop", domain: workshopSession.domain }
     : userSession
       ? { type: "Owner", name: userSession.email }
       : { type: "Manual", name: "web" };
@@ -1533,7 +1585,7 @@ async function renderWorkshopStatus(app, domain) {
       { headers: { authorization: `Bearer ${session.token}` } });
     if (whoR.ok) {
       who = whoR.body;
-      setWorkshopSession(w.domain, session.token, { role: who.role, name: who.name, mechanicId: who.mechanicId });
+      setWorkshopSession(w.domain, session.token, { role: who.role, mechanicId: who.mechanicId, email: who.email });
       session = getWorkshopSession();
     } else {
       clearWorkshopSession();
@@ -1556,14 +1608,15 @@ Value: ${esc(w.dnsRecord.value)}</code>
        <p id="ws-verify-status" class="error"></p>
        <p class="qr-caption">${t("ws_anyone_can_verify")}</p>`;
 
+  // Owner vs. mechanic isn't announced in words here either -- the same
+  // "verified representative" framing as the nav. Whether admin controls
+  // (the Mechanics section below) actually show up is what distinguishes
+  // the two roles in practice, not the wording of this sentence.
   let identityBlock;
-  if (isOwner) {
-    identityBlock = `<p>${t("ws_signed_in_owner", {
-      staleNote: esc(staleNote), strong: "<strong>", strongEnd: "</strong>", domain: esc(w.domain) })}
-      <button id="ws-signout-btn">${t("ws_signout_btn")}</button></p>`;
-  } else if (isMechanic) {
-    identityBlock = `<p>${t("ws_signed_in_mechanic", {
-      staleNote: esc(staleNote), strong: "<strong>", strongEnd: "</strong>", name: esc(who.name), domain: esc(w.domain) })}
+  if (isOwner || isMechanic) {
+    identityBlock = `<p>${t("ws_signed_in_as", {
+      staleNote: esc(staleNote), strong: "<strong>", strongEnd: "</strong>",
+      email: esc(who.email || ""), domain: esc(w.domain) })}
       <button id="ws-signout-btn">${t("ws_signout_btn")}</button></p>`;
   } else if (w.verified) {
     identityBlock = `<h2>${t("ws_signin_heading")}</h2>
@@ -1586,17 +1639,24 @@ Value: ${esc(w.dnsRecord.value)}</code>
     <h2>${t("ws_mechanics_heading")}</h2>
     <p>${t("ws_mechanics_note")}</p>
     <ul>${(w.mechanics || []).map(m =>
-      `<li>${esc(m.name)} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">${t("ws_mech_remove_btn")}</button></li>`
+      `<li>${esc(m.email)} <button class="ws-remove-mech" data-id="${esc(m.mechanicId)}">${t("ws_mech_remove_btn")}</button></li>`
     ).join("") || `<li>${t("ws_mechanics_none")}</li>`}</ul>
     <div class="row">
       <input id="ws-mech-email" type="email" placeholder="${esc(t("ws_mech_email_placeholder"))}">
-      <input id="ws-mech-name" placeholder="${esc(t("ws_mech_name_placeholder"))}">
       <button id="ws-mech-add-btn">${t("ws_mech_add_btn")}</button>
     </div>
     <p id="ws-mech-status" class="error"></p>` : "";
 
   app.innerHTML = `
-    <h1>${esc(w.name)}</h1>
+    <h1>${esc(w.name)}${isOwner ? ` <button id="ws-rename-toggle-btn" class="no-print">${t("ws_rename_btn")}</button>` : ""}</h1>
+    ${isOwner ? `
+    <div class="no-print" id="ws-rename-box" style="display:none">
+      <div class="row">
+        <input id="ws-rename-input" value="${esc(w.name)}">
+        <button id="ws-rename-save-btn">${t("save_btn")}</button>
+      </div>
+      <p id="ws-rename-status" class="error"></p>
+    </div>` : ""}
     <div class="card">
       <div class="field">${t("ws_field_domain")}</div><div>${esc(w.domain)}</div>
       <div class="field">${t("ws_field_status")}</div><div>${w.verified ? t("ws_status_verified") : t("ws_status_pending")}</div>
@@ -1606,6 +1666,28 @@ Value: ${esc(w.dnsRecord.value)}</code>
     ${mechanicsBlock}
     <p><a href="/workshop">${t("ws_register_another")}</a></p>
   `;
+
+  const renameToggleBtn = document.getElementById("ws-rename-toggle-btn");
+  if (renameToggleBtn) renameToggleBtn.onclick = () => {
+    const box = document.getElementById("ws-rename-box");
+    box.style.display = box.style.display === "none" ? "block" : "none";
+  };
+  const renameSaveBtn = document.getElementById("ws-rename-save-btn");
+  if (renameSaveBtn) renameSaveBtn.onclick = async () => {
+    const status = document.getElementById("ws-rename-status");
+    const name = document.getElementById("ws-rename-input").value.trim();
+    if (!name) { status.textContent = t("enter_one_field"); return; }
+    renameSaveBtn.disabled = true;
+    const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/name`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
+      body: JSON.stringify({ name }),
+    });
+    renameSaveBtn.disabled = false;
+    if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
+    renderWorkshopStatus(app, domain);
+  };
+  enterSubmits(["ws-rename-input"], "ws-rename-save-btn");
 
   const verifyBtn = document.getElementById("ws-verify-btn");
   if (verifyBtn) verifyBtn.onclick = async () => {
@@ -1650,7 +1732,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
     otpVerifyBtn.disabled = false;
     if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
     setWorkshopSession(w.domain, rr.body.token,
-      { role: rr.body.role, name: rr.body.name, mechanicId: rr.body.mechanicId });
+      { role: rr.body.role, mechanicId: rr.body.mechanicId, email });
     renderAuthStatus();
     renderWorkshopStatus(app, domain);
   };
@@ -1668,17 +1750,16 @@ Value: ${esc(w.dnsRecord.value)}</code>
   if (addBtn) addBtn.onclick = async () => {
     const status = document.getElementById("ws-mech-status");
     const email = document.getElementById("ws-mech-email").value.trim();
-    const name = document.getElementById("ws-mech-name").value.trim();
     if (!email) { status.textContent = t("ws_enter_domain_email"); return; }
     const rr = await api(`/v1/workshops/${encodeURIComponent(domain)}/mechanics`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
-      body: JSON.stringify({ email, name }),
+      body: JSON.stringify({ email }),
     });
     if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
     renderWorkshopStatus(app, domain);
   };
-  enterSubmits(["ws-mech-email", "ws-mech-name"], "ws-mech-add-btn");
+  enterSubmits(["ws-mech-email"], "ws-mech-add-btn");
 
   document.querySelectorAll(".ws-remove-mech").forEach(btn => {
     btn.onclick = async () => {
