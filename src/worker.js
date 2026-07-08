@@ -467,19 +467,47 @@ async function addMechanic(request, env, domain) {
 // hashed) after it expires serves no one. Stored as a plain KV entry with
 // expirationTtl instead -- Cloudflare deletes it on its own.
 
+const OTP_TTL_SECONDS = 600;
+const OTP_RESEND_COOLDOWN_SECONDS = 60;
+
 function otpKey(domain, mechanicId) {
   return `MECHOTP#${workshopDomain(domain)}#${mechanicId}`;
 }
 
-async function storeOtp(env, domain, mechanicId, code, ttlSeconds = 600) {
-  await env.PASSPORTS.put(otpKey(domain, mechanicId), await secretHash(code), { expirationTtl: ttlSeconds });
+async function storeOtp(env, domain, mechanicId, code, ttlSeconds = OTP_TTL_SECONDS) {
+  // Stores createdAt alongside the hash (not just the bare hash string)
+  // specifically so otpCooldownActive can tell how old this entry is --
+  // KV's own expirationTtl manages cleanup but doesn't expose remaining
+  // TTL or creation time back on a plain get().
+  await env.PASSPORTS.put(otpKey(domain, mechanicId),
+    JSON.stringify({ hash: await secretHash(code), createdAt: Date.now() }),
+    { expirationTtl: ttlSeconds });
+}
+
+async function otpCooldownActive(env, domain, mechanicId) {
+  // True if a code was already minted for this identity within the last
+  // OTP_RESEND_COOLDOWN_SECONDS -- without this, hitting .../otp/request
+  // repeatedly for the same victim would fire a fresh email every single
+  // time, at zero cost to the caller and real cost to both the victim's
+  // inbox and this provider's own sender reputation. Callers must still
+  // return the *same* response whether or not this was true (see
+  // requestOtp/requestUserOtp) -- a distinct status would leak exactly
+  // the kind of "is this identity real" signal the anti-enumeration
+  // design elsewhere in this file exists to avoid.
+  const stored = await env.PASSPORTS.get(otpKey(domain, mechanicId));
+  if (!stored) return false;
+  let parsed;
+  try { parsed = JSON.parse(stored); } catch { return false; }
+  return (Date.now() - (parsed.createdAt || 0)) < OTP_RESEND_COOLDOWN_SECONDS * 1000;
 }
 
 async function checkAndConsumeOtp(env, domain, mechanicId, code) {
   const key = otpKey(domain, mechanicId);
   const stored = await env.PASSPORTS.get(key);
   if (!stored) return false;
-  if (stored !== (await secretHash(code))) return false;
+  let parsed;
+  try { parsed = JSON.parse(stored); } catch { return false; }
+  if (parsed.hash !== (await secretHash(code))) return false;
   await env.PASSPORTS.delete(key); // one-time use
   return true;
 }
@@ -559,14 +587,17 @@ async function requestOtp(request, env, domain) {
   // given shop.
   const identity = findLoginIdentity(state, email);
   if (identity) {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    await storeOtp(env, domain, identity.mechanicId || "OWNER", code);
-    try {
-      await sendEmail(env, email, "Your Open Vehicle Passport sign-in code",
-        `Your one-time code is ${code}. It expires in 10 minutes.\n\n` +
-        `If you didn't request this, ignore this email.`);
-    } catch (e) {
-      return json({ error: `could not send email: ${e}` }, 502);
+    const slot = identity.mechanicId || "OWNER";
+    if (!(await otpCooldownActive(env, domain, slot))) {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await storeOtp(env, domain, slot, code);
+      try {
+        await sendEmail(env, email, "Your Open Vehicle Passport sign-in code",
+          `Your one-time code is ${code}. It expires in 10 minutes.\n\n` +
+          `If you didn't request this, ignore this email.`);
+      } catch (e) {
+        return json({ error: `could not send email: ${e}` }, 502);
+      }
     }
   }
   return json({ sent: true, note: "If that email is on file for this workshop, a code was sent." });
@@ -625,6 +656,14 @@ async function requestUserOtp(request, env) {
   }
   const email = (body.email || "").trim().toLowerCase();
   if (!email || !email.includes("@")) return json({ error: "a valid email is required" }, 400);
+
+  if (await otpCooldownActive(env, "USER", email)) {
+    // Any email "succeeds" here (unlike requestOtp above, there's no
+    // existence check to protect), which makes this endpoint an even
+    // easier mailbox-bombing vector without a cooldown -- silently skip
+    // the resend rather than mint a fresh code (and email) on every hit.
+    return json({ sent: true });
+  }
 
   const code = String(Math.floor(100000 + Math.random() * 900000));
   await storeOtp(env, "USER", email, code);
