@@ -137,6 +137,38 @@ function clearWorkshopSession() {
   localStorage.removeItem(WORKSHOP_SESSION_KEY);
 }
 
+// A separate, plain personal identity -- not tied to any workshop. Its
+// only job is to satisfy the provider's base write gate (see app.py's
+// _authenticate_write / worker.js's authenticateWrite): using the app
+// locally (queuing events in the outbox below) needs no login at all;
+// only the moment of actually syncing to a provider does. Any email
+// qualifies -- there's no pre-existing record to match against, unlike
+// a workshop's owner/mechanic OTP.
+const USER_SESSION_KEY = "ovp_user_session";
+function getUserSession() {
+  try { return JSON.parse(localStorage.getItem(USER_SESSION_KEY)); } catch { return null; }
+}
+function setUserSession(email, token) {
+  localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ email, token }));
+}
+function clearUserSession() {
+  localStorage.removeItem(USER_SESSION_KEY);
+}
+
+// Whichever session can authenticate a write to this provider right now
+// -- preferring a workshop/mechanic session when it matches the event's
+// own producer.domain claim (so that session also earns the verified
+// stamp), falling back to the plain personal identity otherwise. Returns
+// null if neither is signed in, meaning a sync attempt would just get a
+// 401 -- callers use that to show a sign-in prompt instead of trying.
+function bestAuthSession(producerDomain) {
+  const ws = getWorkshopSession();
+  if (producerDomain && ws && ws.domain === producerDomain) return ws;
+  const us = getUserSession();
+  if (us) return us;
+  return ws || null;
+}
+
 async function api(path, opts) {
   const resp = await fetch(path, opts);
   let body = null;
@@ -167,6 +199,20 @@ function saveOutbox(id, items) {
   else localStorage.removeItem(outboxKey(id));
 }
 
+// A brand-new passport is minted entirely client-side (see createPassport)
+// and never touches any provider until the first sync -- these two flags
+// are how renderPassport tells "a passport I created locally, just not
+// synced yet" apart from "a random/typo'd id nobody's ever heard of",
+// and how flushOutbox avoids re-POSTing /v1/passports on every sync once
+// it's already succeeded once.
+function knownLocalKey(id) { return `ovp_known_local_${id}`; }
+function markKnownLocal(id) { localStorage.setItem(knownLocalKey(id), "1"); }
+function isKnownLocal(id) { return localStorage.getItem(knownLocalKey(id)) === "1" || loadOutbox(id).length > 0; }
+
+function registeredKey(id) { return `ovp_registered_${id}`; }
+function markRegistered(id) { localStorage.setItem(registeredKey(id), "1"); }
+function isRegistered(id) { return localStorage.getItem(registeredKey(id)) === "1"; }
+
 // A just-synced event can still be briefly invisible in a fresh GET --
 // Cloudflare KV's list() is only eventually consistent (documented
 // elsewhere in this project: ~15-20s observed lag). Without this, a
@@ -195,20 +241,58 @@ function rememberRecentlySynced(id, ev) {
   saveRecentSynced(id, items);
 }
 
+// Registering the passport itself is the first thing a sync needs -- a
+// locally-created id has never been mentioned to this provider until
+// now. Requires *some* signed-in identity (see app.py's
+// _authenticate_write): this is the exact moment "add locally
+// anonymously" ends and "push to cloud" begins. A 409 (already
+// registered -- e.g. a previous sync succeeded but this browser's flag
+// got cleared) counts as success, same as 201.
+async function ensureRegistered(id) {
+  if (isRegistered(id)) return true;
+  const session = bestAuthSession(null);
+  if (!session) return false; // not signed in -- nothing to even attempt
+  let r;
+  try {
+    r = await api("/v1/passports", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
+      body: JSON.stringify({ id }),
+    });
+  } catch {
+    return false; // offline
+  }
+  if (r.ok || r.status === 409) { markRegistered(id); return true; }
+  return false; // e.g. 401 -- session missing/expired/invalid
+}
+
 let flushing = false;
 async function flushOutbox(id) {
   if (flushing) return;
   flushing = true;
   try {
     const outbox = loadOutbox(id);
+    if (!outbox.length) return;
+    if (!(await ensureRegistered(id))) {
+      // Not signed in (or offline) -- leave everything queued.
+      // renderPassport shows a sign-in prompt in this state; there's
+      // nothing to retry here until that changes.
+      return;
+    }
+
     let changed = false;
     for (const item of outbox) {
       if (item.error) continue; // needs a manual discard, not auto-retried forever
+      // Recomputed fresh per item, not baked in at enqueue time: signing
+      // in can happen *after* an event was queued anonymously, and this
+      // is what lets that later sign-in actually authenticate the sync.
+      const session = bestAuthSession(item.ev.producer?.domain);
+      if (!session) break; // signed out since queuing -- wait for sign-in
       let r;
       try {
         r = await api(`/v1/passports/${id}/events`, {
           method: "POST",
-          headers: { "content-type": "application/json", ...(item.headers || {}) },
+          headers: { "content-type": "application/json", authorization: `Bearer ${session.token}` },
           body: JSON.stringify(item.ev),
         });
       } catch {
@@ -218,6 +302,8 @@ async function flushOutbox(id) {
       if (r.ok) {
         item.sent = true;
         rememberRecentlySynced(id, r.body);
+      } else if (r.status === 401 || r.status === 403) {
+        break; // invalid/expired session -- not a per-item error to show
       } else {
         item.error = r.body?.error || `HTTP ${r.status}`;
       }
@@ -234,9 +320,9 @@ async function flushOutbox(id) {
 
 window.addEventListener("online", () => { if (currentPassportId) flushOutbox(currentPassportId); });
 
-async function enqueueEvent(id, ev, headers) {
+async function enqueueEvent(id, ev) {
   const outbox = loadOutbox(id);
-  outbox.push({ ev, headers: headers || {} });
+  outbox.push({ ev });
   saveOutbox(id, outbox);
   await renderPassport(document.getElementById("app"), id);
   flushOutbox(id);
@@ -292,18 +378,15 @@ async function showEventDetail(id, idx, detailEl, btn) {
   }
 }
 
-async function createPassport() {
-  const btn = document.getElementById("create-btn");
-  const status = document.getElementById("create-status");
-  btn.disabled = true;
-  status.textContent = "Creating…";
-  const r = await api("/v1/passports", { method: "POST" });
-  if (!r.ok) {
-    status.textContent = `Could not create a passport: ${r.body?.error || r.status}`;
-    btn.disabled = false;
-    return;
-  }
-  location.href = `/p/${r.body.id}`;
+function createPassport() {
+  // Entirely local, entirely anonymous -- no server call, no login. A v4
+  // uuid is fine here (same reasoning as envelope()'s event ids):
+  // uniqueness is what matters, ordering already comes from
+  // occurredAt/recordedAt. This provider only hears about the passport
+  // the moment something actually gets synced (see ensureRegistered).
+  const id = crypto.randomUUID();
+  markKnownLocal(id);
+  location.href = `/p/${id}`;
 }
 
 function extractPassportUuid(text) {
@@ -447,19 +530,28 @@ function renderHome(app) {
 async function renderPassport(app, id) {
   currentPassportId = id;
   const cacheKey = `ovp_state_${id}`;
-  let state, offlineLoad = false;
+  let state, offlineLoad = false, neverSynced = false;
   try {
     const r = await api(`/v1/passports/${id}`);
     if (r.status === 404) {
-      app.innerHTML = "<p class='error'>No such passport on this provider.</p>";
-      return;
-    }
-    if (!r.ok) {
+      if (!isKnownLocal(id)) {
+        app.innerHTML = "<p class='error'>No such passport on this provider.</p>";
+        return;
+      }
+      // Minted entirely client-side (see createPassport) and never
+      // synced to this provider -- not an error, just "not pushed yet".
+      // ensureRegistered (inside flushOutbox) is what actually creates
+      // it server-side, once there's something queued and someone's
+      // signed in to push it.
+      state = { event_count: 0 };
+      neverSynced = true;
+    } else if (!r.ok) {
       app.innerHTML = `<p class="error">Could not load passport: HTTP ${r.status}</p>`;
       return;
+    } else {
+      state = r.body;
+      localStorage.setItem(cacheKey, JSON.stringify(state));
     }
-    state = r.body;
-    localStorage.setItem(cacheKey, JSON.stringify(state));
   } catch {
     // Offline and the very fetch() threw -- fall back to the last copy this
     // browser saw, so the page (and any queued events) still render instead
@@ -467,10 +559,16 @@ async function renderPassport(app, id) {
     // origin to sync with, not something the page depends on to exist.
     try { state = JSON.parse(localStorage.getItem(cacheKey)); } catch { state = null; }
     if (!state) {
-      app.innerHTML = "<p class='error'>Offline, and no cached copy of this passport in this browser yet.</p>";
-      return;
+      if (isKnownLocal(id)) {
+        state = { event_count: 0 };
+        neverSynced = true;
+      } else {
+        app.innerHTML = "<p class='error'>Offline, and no cached copy of this passport in this browser yet.</p>";
+        return;
+      }
+    } else {
+      offlineLoad = true;
     }
-    offlineLoad = true;
   }
   const v = state.vehicle || {};
   const desc = [v.modelYear, v.make, v.model].filter(Boolean).map(esc).join(" ");
@@ -528,21 +626,53 @@ async function renderPassport(app, id) {
 
   const pendingCount = outbox.filter(i => !i.error).length;
   const errorCount = outbox.filter(i => i.error).length;
+  // Using the app is entirely anonymous -- creating a passport, adding
+  // VIN info, logging events all just queue locally (see createPassport/
+  // enqueueEvent). Only the moment something actually needs to reach a
+  // provider (registering, or pushing a queued event) does a sign-in
+  // start to matter -- see ensureRegistered/flushOutbox.
+  const userSession = getUserSession();
+  const hasAnySession = !!(userSession || getWorkshopSession());
+  const needsSync = neverSynced || !isRegistered(id) || pendingCount > 0;
+  const needsSignIn = needsSync && !hasAnySession && !offlineLoad;
+
   // offlineLoad and pendingCount are independent facts -- being offline
   // right now doesn't mean there's nothing queued, and that's exactly the
   // "3 commits ahead, can't reach origin" case this status line is for.
   let syncStatus;
   if (errorCount) syncStatus = `⚠ ${errorCount} event(s) failed to sync. <button id="sync-now-btn">Retry</button>`;
+  else if (needsSignIn) syncStatus = `Not yet synced -- sign in below to push to a provider.`;
   else if (offlineLoad && pendingCount) syncStatus = `⚠ Offline — ${pendingCount} pending. ` +
     `<button id="sync-now-btn">Try syncing now</button>`;
   else if (offlineLoad) syncStatus = `⚠ Offline — showing the last copy this browser saved.`;
   else if (pendingCount) syncStatus = `⟳ ${pendingCount} pending — ` +
     `${navigator.onLine ? "syncing…" : "will sync when back online"} <button id="sync-now-btn">Sync now</button>`;
+  else if (neverSynced || !isRegistered(id)) syncStatus = `Not yet synced to any provider — ` +
+    `add info or log an event above to start.`;
   else syncStatus = `✓ Synced`;
+  // A signed-in personal identity is a quiet fact, not the headline --
+  // shown the same way regardless of which branch above fired.
+  if (userSession) syncStatus += ` <span class="qr-caption">(signed in as ${esc(userSession.email)} · ` +
+    `<a href="#" id="user-signout-link">sign out</a>)</span>`;
 
   app.innerHTML = `
     <h1>${desc || "Vehicle passport"}</h1>
     <p id="sync-status" class="sync-status no-print">${syncStatus}</p>
+    ${needsSignIn ? `
+    <div class="no-print" id="user-signin-box">
+      <p class="qr-caption">Adding info and logging events works fully offline, no login needed --
+      signing in is only for pushing this passport to a cloud provider. Any email works,
+      just to prove you control it: a one-time code, no password.</p>
+      <div class="row">
+        <input id="user-otp-email" type="email" placeholder="your email" style="flex:1">
+        <button id="user-otp-request-btn">Send code</button>
+      </div>
+      <div class="row" id="user-otp-code-row" style="display:none">
+        <input id="user-otp-code" placeholder="6-digit code" style="max-width:9rem">
+        <button id="user-otp-verify-btn">Verify</button>
+      </div>
+      <p id="user-otp-status" class="error"></p>
+    </div>` : ""}
     <p class="print-only qr-caption">Printed ${fmtTime(new Date().toISOString())} &mdash; full history: ${esc(location.href)}</p>
     <div class="card">
       <div class="field">VIN</div><div>${esc(v.vin) || "(not set)"}</div>
@@ -623,6 +753,44 @@ async function renderPassport(app, id) {
     items.forEach(item => delete item.error);
     saveOutbox(id, items);
     flushOutbox(id);
+  };
+
+  const userOtpRequestBtn = document.getElementById("user-otp-request-btn");
+  if (userOtpRequestBtn) userOtpRequestBtn.onclick = async () => {
+    const status = document.getElementById("user-otp-status");
+    const email = document.getElementById("user-otp-email").value.trim();
+    if (!email) { status.textContent = "Enter your email."; return; }
+    userOtpRequestBtn.disabled = true;
+    const rr = await api("/v1/auth/otp/request", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    userOtpRequestBtn.disabled = false;
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    status.textContent = "Check your email for a code.";
+    document.getElementById("user-otp-code-row").style.display = "flex";
+  };
+  const userOtpVerifyBtn = document.getElementById("user-otp-verify-btn");
+  if (userOtpVerifyBtn) userOtpVerifyBtn.onclick = async () => {
+    const status = document.getElementById("user-otp-status");
+    const email = document.getElementById("user-otp-email").value.trim();
+    const code = document.getElementById("user-otp-code").value.trim();
+    if (!code) { status.textContent = "Enter the code from your email."; return; }
+    userOtpVerifyBtn.disabled = true;
+    const rr = await api("/v1/auth/otp/verify", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, code }),
+    });
+    userOtpVerifyBtn.disabled = false;
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    setUserSession(email, rr.body.token);
+    renderPassport(app, id);
+  };
+  const userSignoutLink = document.getElementById("user-signout-link");
+  if (userSignoutLink) userSignoutLink.onclick = (e) => {
+    e.preventDefault();
+    clearUserSession();
+    renderPassport(app, id);
   };
   document.querySelectorAll(".discard-btn").forEach(btn => {
     btn.onclick = () => {
@@ -785,11 +953,10 @@ async function submitLogEvent(id, currentVehicle) {
     ? { type: "Workshop", domain, name: domain }
     : { type: "Manual", name: "web" };
   const ev = envelope(id, type, data, producer);
-
-  const session = getWorkshopSession();
-  const headers = (domain && session && session.domain === domain)
-    ? { authorization: `Bearer ${session.token}` } : {};
-  await enqueueEvent(id, ev, headers);
+  // Auth is resolved fresh at flush time (see bestAuthSession), not here
+  // -- this event can be queued and shown immediately with no session at
+  // all, same as any other local edit.
+  await enqueueEvent(id, ev);
 }
 
 // --- Workshop registration + DNS verification ------------------------------

@@ -7,12 +7,17 @@
  * sorted order for free, same as a DynamoDB Query). Two independently-
  * built providers speaking the same protocol -- that's the point.
  *
- * POC MODE: there is currently no write access control at all -- anyone
- * who knows a passport id (as guessable as the QR code, i.e. not
- * guessable: a UUIDv7 with 62 random bits) can both read and append to
- * it. This was a deliberate simplification for easier POCing (a
- * writeToken model existed and was removed, not just left unenforced --
- * see git history if it needs to come back).
+ * Read access is public by design -- anyone who knows a passport id (as
+ * guessable as the QR code, i.e. not guessable: a UUIDv7 with 62 random
+ * bits) can read it. Writes (creating a passport, appending an event)
+ * require *some* signed-in identity -- see authenticateWrite -- but
+ * that identity can be a plain personal email (see requestUserOtp/
+ * verifyUserOtp), not necessarily a registered workshop: the bar is
+ * "controls a real mailbox", not "is affiliated with anything". This
+ * lets the viewer's local-first outbox queue events completely
+ * anonymously (no login needed to use the app offline/locally) while
+ * still requiring a login at the moment those events actually get
+ * pushed to this provider.
  */
 import * as ovpf from "./ovpf-core.js";
 
@@ -56,6 +61,16 @@ async function getMeta(env, id) {
 }
 
 async function createPassport(request, env) {
+  // Local-first: the passport id is normally minted *locally* first (the
+  // viewer's own crypto.randomUUID(), before this provider ever hears
+  // about it), so this registers that existing id with this provider
+  // rather than handing out a new one. Requires *some* signed-in
+  // identity (see authenticateWrite) -- registering is the moment a
+  // locally-anonymous passport actually becomes visible to this
+  // provider, so it's the moment a login is needed, not before.
+  if (!(await authenticateWrite(env, request))) {
+    return json({ error: "sign in required to sync a passport to this provider" }, 401);
+  }
   let body = {};
   try {
     const text = await request.text();
@@ -328,6 +343,29 @@ async function checkOwnerSession(state, env, request) {
   return !!match && match.role === "workshop";
 }
 
+async function authenticateWrite(env, request) {
+  // Base gate for creating/appending to a passport: is *some* identity
+  // signed in at all? A personal (role="user") session -- just a plain
+  // email OTP, not tied to any workshop -- always qualifies, since the
+  // bar for this gate is "controls a real mailbox", not "is affiliated
+  // with anything". A workshop-owner or mechanic session also qualifies
+  // (re-validated against live workshop state, same as
+  // matchProducerSession, so a removed mechanic can't keep writing).
+  // This is deliberately separate from the *producer.verified* stamping
+  // logic in appendEvent, which additionally requires producer.domain
+  // to match the session's own domain -- this gate only asks "is anyone
+  // logged in", not "as whom".
+  const token = bearerToken(request);
+  const payload = await verifySessionToken(env, token);
+  if (!payload) return false;
+  if (payload.role === "user") return true;
+  if (payload.domain) {
+    const workshop = await getWorkshop(env, payload.domain);
+    if (workshop && (await matchProducerSession(workshop, env, token))) return true;
+  }
+  return false;
+}
+
 async function dnsTxtLookup(name) {
   // DNS-over-HTTPS (Cloudflare's own public resolver) -- same approach as
   // app.py's urllib version, just via fetch() here. No DNS library needed
@@ -552,6 +590,70 @@ async function verifyOtp(request, env, domain) {
   return json({ token, role: identity.role, domain, mechanicId: identity.mechanicId, name });
 }
 
+// --- Personal (non-workshop) OTP login --------------------------------------
+// Not tied to any domain or a pre-existing record -- unlike a workshop's
+// owner/mechanic OTP (which only fires for an email already on file, to
+// avoid leaking who's affiliated with a shop), *any* email qualifies here:
+// verifying it IS the identity, with nothing else to look up. Reuses
+// otpKey/storeOtp/checkAndConsumeOtp under the pseudo-domain "USER" (a
+// real workshop domain always contains a ".", so this can never collide
+// with one) -- no new storage shape needed.
+
+async function requestUserOtp(request, env) {
+  // POST /v1/auth/otp/request {email} -> emails a one-time code for a
+  // plain personal identity. Used to gate pushing local-first outbox
+  // events to this provider (see appendEvent/createPassport) -- the
+  // whole point is that using the app locally/anonymously needs no
+  // login at all; only the moment of syncing to the cloud does.
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+  const email = (body.email || "").trim().toLowerCase();
+  if (!email || !email.includes("@")) return json({ error: "a valid email is required" }, 400);
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  await storeOtp(env, "USER", email, code);
+  try {
+    await sendEmail(env, email, "Your Open Vehicle Passport sign-in code",
+      `Your one-time code is ${code}. It expires in 10 minutes.\n\n` +
+      `If you didn't request this, ignore this email.`);
+  } catch (e) {
+    return json({ error: `could not send email: ${e}` }, 502);
+  }
+  return json({ sent: true });
+}
+
+async function verifyUserOtp(request, env) {
+  // POST /v1/auth/otp/verify {email, code} -> a signed session token
+  // with role="user", good for pushing local passports/events to this
+  // provider (see authenticateWrite). Not scoped to any domain.
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+  const email = (body.email || "").trim().toLowerCase();
+  const code = (body.code || "").trim();
+  if (!email || !code) return json({ error: "email and code required" }, 400);
+  if (!(await checkAndConsumeOtp(env, "USER", email, code))) {
+    return json({ error: "invalid or expired code" }, 403);
+  }
+
+  let token;
+  try {
+    token = await issueSessionToken(env, null, "user", email, null, email);
+  } catch (e) {
+    return json({ error: String(e) }, 500);
+  }
+  return json({ token, role: "user", email });
+}
+
 async function whoamiWorkshop(request, env, domain) {
   const state = await getWorkshop(env, domain);
   if (!state) return json({ error: "no such workshop registered" }, 404);
@@ -576,11 +678,17 @@ async function removeMechanic(request, env, domain, mechanicId) {
 }
 
 async function appendEvent(request, env, id) {
+  // Requires *some* signed-in identity (see authenticateWrite) -- a
+  // plain personal email OTP is enough, no workshop affiliation needed.
+  // This is deliberately a separate, weaker requirement than the
+  // producer.verified stamping below: being logged in as *someone* lets
+  // you write; being logged in as *this specific workshop* is what
+  // additionally earns the verified badge.
   const meta = await getMeta(env, id);
   if (!meta) return json({ error: "no such passport" }, 404);
-
-  // POC MODE: no write access control at all right now -- see module
-  // docstring. Anyone who can reach this passport id can append to it.
+  if (!(await authenticateWrite(env, request))) {
+    return json({ error: "sign in required to sync events to this provider" }, 401);
+  }
 
   let ev;
   try {
@@ -661,6 +769,9 @@ export default {
     const path = url.pathname;
 
     if (method === "POST" && path === "/v1/passports") return createPassport(request, env);
+
+    if (method === "POST" && path === "/v1/auth/otp/request") return requestUserOtp(request, env);
+    if (method === "POST" && path === "/v1/auth/otp/verify") return verifyUserOtp(request, env);
 
     let m = path.match(/^\/v1\/passports\/([^/]+)\/events$/);
     if (m && method === "POST") return appendEvent(request, env, m[1]);

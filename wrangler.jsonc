@@ -34,8 +34,8 @@
   // clearly instead of issuing an unusable session (see issueSessionToken).
   "vars": {
     "EMAIL_PROVIDER": "postmark",
-    "POSTMARK_FROM": "",
-    "RESEND_FROM": ""
+    "POSTMARK_FROM": "noreply@skoor.ee",
+    "RESEND_FROM": "noreply@skoor.ee"
   },
 
   "routes": [
