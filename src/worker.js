@@ -151,13 +151,11 @@ async function loadWorkshopEvents(env, domain) {
 }
 
 async function appendWorkshopEvent(env, domain, ev) {
-  const existing = await loadWorkshopEvents(env, domain);
-  const prevHash = existing.length ? existing[existing.length - 1].hash : null;
-  delete ev.hash;
-  if (prevHash) ev.prevHash = prevHash; else delete ev.prevHash;
-  ev.hash = await ovpf.eventHash(ev);
-  await env.PASSPORTS.put(workshopEventKey(domain, ev), JSON.stringify(ev));
-  return ev;
+  // Sealed (prevHash/hash computed) via the PassportSequencer Durable
+  // Object, not a local KV read -- see its module comment for why.
+  const sealed = await sealEvent(env, "workshop", domain, ev);
+  await env.PASSPORTS.put(workshopEventKey(domain, sealed), JSON.stringify(sealed));
+  return sealed;
 }
 
 function reduceWorkshop(events) {
@@ -171,9 +169,14 @@ function reduceWorkshop(events) {
     } else if (t === "WorkshopDomainVerified") {
       state.verified = true; state.verifiedAt = ev.occurredAt;
     } else if (t === "WorkshopMechanicAdded") {
-      state.mechanicsRaw.set(d.mechanicId, { name: d.name, email: d.email || null });
+      // No name field at all -- a mechanic's email *is* their identity
+      // now (shown as-is wherever attribution matters), not a free-text
+      // label someone could set to anything.
+      state.mechanicsRaw.set(d.mechanicId, { email: d.email || null });
     } else if (t === "WorkshopMechanicRemoved") {
       state.mechanicsRaw.delete(d.mechanicId);
+    } else if (t === "WorkshopNameUpdated") {
+      state.name = d.name;
     }
     // WorkshopSecretResetRequested/WorkshopSecretReset/WorkshopMechanicSecretReset/
     // WorkshopOwnerEmailClaimRequested/WorkshopOwnerEmailSet: legacy events
@@ -182,11 +185,12 @@ function reduceWorkshop(events) {
     // email at all: it's just "does this email's domain match the
     // workshop's own domain" (see findLoginIdentity).
   }
-  // Sanitized list for anything that goes out over the wire -- an email is
-  // real PII on an otherwise-unauthenticated endpoint, unlike a first
-  // name, so only whether OTP sign-in is available (hasEmail) is shown.
+  // hasEmail-only by default -- an email is real PII on an otherwise-
+  // unauthenticated endpoint. workshopView reveals the actual addresses
+  // only once the caller has proven (via a live owner session) that
+  // they're allowed to see them -- see readWorkshop.
   state.mechanics = [...state.mechanicsRaw].map(([mechanicId, m]) =>
-    ({ mechanicId, name: m.name, hasEmail: !!m.email }));
+    ({ mechanicId, hasEmail: !!m.email }));
   return state;
 }
 
@@ -223,14 +227,17 @@ async function getWorkshop(env, domain) {
   return events.length ? reduceWorkshop(events) : null;
 }
 
-function workshopView(state) {
+function workshopView(state, revealEmails = false) {
+  const mechanics = revealEmails
+    ? [...state.mechanicsRaw].map(([mechanicId, m]) => ({ mechanicId, email: m.email }))
+    : state.mechanics;
   return {
     domain: state.domain,
     name: state.name,
     verified: !!state.verified,
     verifiedAt: state.verifiedAt || null,
     verificationToken: state.verificationToken,
-    mechanics: state.mechanics,
+    mechanics,
     dnsRecord: {
       type: "TXT",
       name: `_ovp-verify.${state.domain}`,
@@ -419,10 +426,42 @@ async function registerWorkshop(request, env) {
   return json(view, 201);
 }
 
+async function updateWorkshopName(request, env, domain) {
+  // POST /v1/workshops/{domain}/name {name} -- requires an owner session.
+  // The initial name given at registration is anonymous (same ACME-style
+  // "no account" claim as the domain itself), so it must not be trusted
+  // as authoritative -- changing it to whatever's actually correct is
+  // gated to someone who's since proven they hold this exact domain
+  // (DNS-verified) *and* control an email on it (OTP), not left open to
+  // anyone who reaches the registration endpoint first.
+  const state = await getWorkshop(env, domain);
+  if (!state) return json({ error: "no such workshop registered" }, 404);
+  if (!(await checkOwnerSession(state, env, request))) {
+    return json({ error: "missing or invalid owner session -- sign in via OTP first" }, 403);
+  }
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+  const name = (body.name || "").trim();
+  if (!name) return json({ error: "name required" }, 400);
+
+  await appendWorkshopEvent(env, domain, newWorkshopEvent("WorkshopNameUpdated", { name }));
+  return json(workshopView(await getWorkshop(env, domain), true));
+}
+
 async function readWorkshop(request, env, domain) {
   const state = await getWorkshop(env, domain);
   if (!state) return json({ error: "no such workshop registered" }, 404);
-  return json(workshopView(state));
+  // Reveal actual mechanic emails only to a live, valid owner session for
+  // this exact workshop -- everyone else (including an anonymous caller)
+  // gets the PII-free hasEmail-only view (see reduceWorkshop).
+  const match = await matchProducerSession(state, env, bearerToken(request));
+  const isOwner = !!match && match.role === "workshop";
+  return json(workshopView(state, isOwner));
 }
 
 async function verifyWorkshop(request, env, domain) {
@@ -460,13 +499,12 @@ async function addMechanic(request, env, domain) {
     return json({ error: "body must be JSON" }, 400);
   }
   const email = (body.email || "").trim().toLowerCase();
-  const name = (body.name || "").trim();
   if (!email) return json({ error: "email required" }, 400);
 
   const mechanicId = randomToken(6);
   await appendWorkshopEvent(env, domain, newWorkshopEvent(
-    "WorkshopMechanicAdded", { mechanicId, name: name || email, email }));
-  const view = workshopView(await getWorkshop(env, domain));
+    "WorkshopMechanicAdded", { mechanicId, email }));
+  const view = workshopView(await getWorkshop(env, domain), true);
   view.mechanicId = mechanicId;
   view.note = "Mechanic added. They sign in with this email via OTP -- no secret to hand over.";
   return json(view, 201);
@@ -634,7 +672,10 @@ async function verifyOtp(request, env, domain) {
     return json({ error: "invalid or expired code" }, 403);
   }
 
-  const name = identity.role === "workshop" ? state.name : state.mechanicsRaw.get(identity.mechanicId).name;
+  // "name" only means something for the workshop's own owner role (its
+  // display name, e.g. "Skoor OY") -- a mechanic has no separate name
+  // concept anymore, just the email they signed in with.
+  const name = identity.role === "workshop" ? state.name : email;
   let token;
   try {
     token = await issueSessionToken(env, domain, identity.role, email, identity.mechanicId, name);
@@ -719,13 +760,18 @@ async function verifyUserOtp(request, env) {
 async function whoamiWorkshop(request, env, domain) {
   const state = await getWorkshop(env, domain);
   if (!state) return json({ error: "no such workshop registered" }, 404);
-  const match = await matchProducerSession(state, env, bearerToken(request));
+  const token = bearerToken(request);
+  const match = await matchProducerSession(state, env, token);
   if (!match) return json({ error: "invalid or expired session" }, 403);
+  // email comes straight from the token's own payload, not re-derived --
+  // it's what the UI now shows instead of a person's name everywhere
+  // (nav, timeline attribution): "these emails are just verified
+  // representatives of the domain/workshop", not named individuals.
+  const email = (await verifySessionToken(env, token))?.email;
   if (match.role === "workshop") {
-    return json({ role: "workshop", domain, name: state.name });
+    return json({ role: "workshop", domain, name: state.name, email });
   }
-  const mech = state.mechanicsRaw.get(match.mechanicId);
-  return json({ role: "mechanic", domain, mechanicId: match.mechanicId, name: mech.name });
+  return json({ role: "mechanic", domain, mechanicId: match.mechanicId, email });
 }
 
 async function removeMechanic(request, env, domain, mechanicId) {
@@ -736,7 +782,7 @@ async function removeMechanic(request, env, domain, mechanicId) {
   }
   await appendWorkshopEvent(env, domain, newWorkshopEvent(
     "WorkshopMechanicRemoved", { mechanicId }));
-  return json(workshopView(await getWorkshop(env, domain)));
+  return json(workshopView(await getWorkshop(env, domain), true));
 }
 
 async function appendEvent(request, env, id) {
@@ -777,7 +823,7 @@ async function appendEvent(request, env, id) {
   delete producer.verified;
   delete producer.verifiedAt;
   delete producer.mechanicId;
-  delete producer.mechanicName;
+  delete producer.mechanicEmail;
   if (producer.domain) {
     const workshop = await getWorkshop(env, producer.domain);
     if (workshop && workshop.verified) {
@@ -788,7 +834,7 @@ async function appendEvent(request, env, id) {
         if (match.role === "mechanic") {
           const mech = workshop.mechanicsRaw.get(match.mechanicId);
           producer.mechanicId = match.mechanicId;
-          producer.mechanicName = mech.name;
+          producer.mechanicEmail = mech.email;
         }
       }
     }
@@ -796,11 +842,9 @@ async function appendEvent(request, env, id) {
   ev.producer = producer;
 
   // recordedAt is producer-set, immutable -- same contract as app.py.
-  const existing = await loadEvents(env, id);
-  const prevHash = existing.length ? existing[existing.length - 1].hash : null;
-  delete ev.hash;
-  if (prevHash) ev.prevHash = prevHash; else delete ev.prevHash;
-  ev.hash = await ovpf.eventHash(ev);
+  // Sealed (prevHash/hash computed) via the PassportSequencer Durable
+  // Object, not a local KV read -- see its module comment for why.
+  ev = await sealEvent(env, "passport", id, ev);
 
   const key = eventKey(id, ev);
   const existingItem = await env.PASSPORTS.get(key);
@@ -822,6 +866,56 @@ async function exportPassport(request, env, id) {
   const events = await loadEvents(env, id);
   const ndjson = events.map(e => JSON.stringify(e)).join("\n");
   return new Response(ndjson, { status: 200, headers: { "content-type": "application/x-ndjson" } });
+}
+
+// --- Hash-chain sequencing, via Durable Object -----------------------------
+// The real fix for a real bug: two events appended to the same passport (or
+// workshop) within KV's eventual-consistency window (Cloudflare documents up
+// to ~60s propagation for list()) could each read a "latest event" that
+// doesn't yet reflect the other, computing a prevHash that points at the
+// wrong predecessor and silently breaking the chain -- observed live in
+// production. KV has no strongly-consistent-read or conditional-write
+// primitive to fix this with a query flag (unlike DynamoDB's ConsistentRead
+// on the AWS provider). Durable Objects do guarantee something KV
+// fundamentally can't: every request routed to the *same* DO id is
+// processed strictly one at a time (input gates), so this becomes the
+// single authoritative source for "what's the current head hash" -- no
+// concurrent request can ever observe a stale one.
+//
+// Event *content* still lives in KV as before (cheap, globally-readable) --
+// the DO's own storage holds nothing but the tiny head pointer, bootstrapped
+// once from KV the first time a given id's DO instance ever runs (covers
+// passports/workshops that already existed before this migration), then
+// authoritative forever after since DO storage is itself strongly
+// consistent within a single instance.
+export class PassportSequencer {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  async fetch(request) {
+    const { kind, key, event } = await request.json();
+    let head = await this.state.storage.get("head");
+    if (head === undefined) {
+      const existing = kind === "workshop"
+        ? await loadWorkshopEvents(this.env, key)
+        : await loadEvents(this.env, key);
+      head = existing.length ? { hash: existing[existing.length - 1].hash } : null;
+    }
+    const prevHash = head ? head.hash : null;
+    delete event.hash;
+    if (prevHash) event.prevHash = prevHash; else delete event.prevHash;
+    event.hash = await ovpf.eventHash(event);
+    await this.state.storage.put("head", { hash: event.hash });
+    return json(event);
+  }
+}
+
+async function sealEvent(env, kind, key, event) {
+  const stub = env.PASSPORT_SEQUENCER.get(env.PASSPORT_SEQUENCER.idFromName(`${kind}:${key}`));
+  const resp = await stub.fetch("http://sequencer/", { method: "POST", body: JSON.stringify({ kind, key, event }) });
+  return resp.json();
 }
 
 export default {
@@ -857,6 +951,9 @@ export default {
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/otp\/verify$/);
     if (m && method === "POST") return verifyOtp(request, env, m[1]);
+
+    m = path.match(/^\/v1\/workshops\/([^/]+)\/name$/);
+    if (m && method === "POST") return updateWorkshopName(request, env, m[1]);
 
     m = path.match(/^\/v1\/workshops\/([^/]+)\/mechanics\/([^/]+)$/);
     if (m && method === "DELETE") return removeMechanic(request, env, m[1], m[2]);

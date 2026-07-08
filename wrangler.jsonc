@@ -21,6 +21,23 @@
     { "binding": "PASSPORTS", "id": "25b902565c2c451b8f87d62b3165149b" }
   ],
 
+  // PassportSequencer exists for exactly one reason: KV's list() is only
+  // eventually consistent (Cloudflare documents up to ~60s propagation),
+  // so two events appended to the same passport/workshop close together
+  // could each compute a prevHash from a stale "latest event" read and
+  // silently break the hash chain -- observed live. A Durable Object
+  // guarantees requests to the same id are processed strictly one at a
+  // time, which KV fundamentally cannot; see worker.js's module comment
+  // above the class for the full explanation.
+  "durable_objects": {
+    "bindings": [
+      { "name": "PASSPORT_SEQUENCER", "class_name": "PassportSequencer" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PassportSequencer"] }
+  ],
+
   // EMAIL_PROVIDER picks which HTTP API sendEmail dispatches to
   // ("postmark", the default, or "resend") -- switching provider is a
   // config change, not a code change. POSTMARK_FROM/RESEND_FROM are not
