@@ -41,6 +41,18 @@ function eventKey(id, ev) {
 }
 
 async function loadEvents(env, id) {
+  // KNOWN LIMITATION: this is read *before* computing a new event's
+  // prevHash (see appendEvent), so a stale read of "the latest event"
+  // computes a prevHash pointing at the wrong predecessor -- observed
+  // live: two events appended to the same passport within roughly a
+  // minute of each other silently broke the chain. Workers KV's list()
+  // is only eventually consistent (Cloudflare documents up to ~60s
+  // propagation) with no strongly-consistent-read option at all, unlike
+  // DynamoDB's ConsistentRead (see app.py's _load_events) -- there is no
+  // equivalent fix available within the KV API itself. A real fix needs
+  // per-passport serialized writes, which means Durable Objects instead
+  // of KV for this specific read-modify-write path; that's a genuine
+  // migration, not a patch, and hasn't been done here yet.
   const events = [];
   let cursor;
   do {

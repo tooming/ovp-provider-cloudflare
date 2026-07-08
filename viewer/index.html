@@ -65,6 +65,17 @@
   <span class="links"><a href="/">Passport home</a><a href="/workshop">Register a workshop</a></span>
   <span id="auth-status"></span>
 </nav>
+<div id="nav-signin-box" class="no-print" style="display:none">
+  <div class="row">
+    <input id="nav-otp-email" type="email" placeholder="your email" style="flex:1">
+    <button id="nav-otp-request-btn">Send code</button>
+  </div>
+  <div class="row" id="nav-otp-code-row" style="display:none">
+    <input id="nav-otp-code" placeholder="6-digit code" style="max-width:9rem">
+    <button id="nav-otp-verify-btn">Verify</button>
+  </div>
+  <p id="nav-otp-status" class="error"></p>
+</div>
 <div id="app">Loading…</div>
 
 <script>
@@ -205,7 +216,15 @@ function renderAuthStatus() {
     ? `mechanic ${esc(ws.name || ws.domain)} @ ${esc(ws.domain)}`
     : `workshop owner @ ${esc(ws.domain)}`);
   if (us) parts.push(esc(us.email));
-  if (!parts.length) { el.textContent = "Not signed in"; return; }
+  if (!parts.length) {
+    el.innerHTML = `Not signed in · <a href="#" id="nav-signin-toggle">Sign in</a>`;
+    document.getElementById("nav-signin-toggle").onclick = (e) => {
+      e.preventDefault();
+      const box = document.getElementById("nav-signin-box");
+      box.style.display = box.style.display === "none" ? "block" : "none";
+    };
+    return;
+  }
   el.innerHTML = `${parts.join(" · ")} <a href="#" id="auth-signout-link">sign out</a>`;
   document.getElementById("auth-signout-link").onclick = (e) => {
     e.preventDefault();
@@ -213,6 +232,52 @@ function renderAuthStatus() {
     clearUserSession();
     main(); // re-render the current page too -- its own content may depend on session state
   };
+}
+
+// Wired once at load (this box lives outside #app, so it survives every
+// page's own render() replacing #app's innerHTML) -- lets "Not signed
+// in" actually do something from any page, not just the passport page's
+// own inline sign-in box.
+function initNavSignin() {
+  const requestBtn = document.getElementById("nav-otp-request-btn");
+  requestBtn.onclick = async () => {
+    const status = document.getElementById("nav-otp-status");
+    const email = document.getElementById("nav-otp-email").value.trim();
+    if (!email) { status.textContent = "Enter your email."; return; }
+    requestBtn.disabled = true;
+    const rr = await api("/v1/auth/otp/request", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    requestBtn.disabled = false;
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    status.textContent = "Check your email for a code.";
+    document.getElementById("nav-otp-code-row").style.display = "flex";
+  };
+  const verifyBtn = document.getElementById("nav-otp-verify-btn");
+  verifyBtn.onclick = async () => {
+    const status = document.getElementById("nav-otp-status");
+    const email = document.getElementById("nav-otp-email").value.trim();
+    const code = document.getElementById("nav-otp-code").value.trim();
+    if (!code) { status.textContent = "Enter the code from your email."; return; }
+    verifyBtn.disabled = true;
+    const rr = await api("/v1/auth/otp/verify", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, code }),
+    });
+    verifyBtn.disabled = false;
+    if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
+    setUserSession(email, rr.body.token);
+    document.getElementById("nav-signin-box").style.display = "none";
+    document.getElementById("nav-otp-email").value = "";
+    document.getElementById("nav-otp-code").value = "";
+    document.getElementById("nav-otp-code-row").style.display = "none";
+    status.textContent = "";
+    renderAuthStatus();
+    main(); // refresh the current page too -- its content may depend on session state
+  };
+  enterSubmits(["nav-otp-email"], "nav-otp-request-btn");
+  enterSubmits(["nav-otp-code"], "nav-otp-verify-btn");
 }
 
 async function api(path, opts) {
@@ -621,10 +686,6 @@ async function renderPassport(app, id) {
       offlineLoad = true;
     }
   }
-  const v = state.vehicle || {};
-  const desc = [v.modelYear, v.make, v.model].filter(Boolean).map(esc).join(" ");
-  const mileage = state.mileage ? `${esc(state.mileage.value)} ${esc(state.mileage.unit)}` : "unknown";
-
   // Queued-but-not-yet-synced events are folded into the same timeline,
   // sorted alongside confirmed ones -- a pending oil change should show up
   // right where it happened, not in a separate "drafts" list. Recently-
@@ -641,6 +702,32 @@ async function renderPassport(app, id) {
     (state.timeline || []).some(t => t.at === at && t.type === type);
   const recentSynced = loadRecentSynced(id).filter(item => !alreadyServerSide(item.ev.occurredAt, item.ev.type));
   saveRecentSynced(id, recentSynced); // prune anything the server now reflects
+
+  // The header card (VIN/make/model/year/mileage) otherwise only ever
+  // reads state.vehicle/state.mileage -- server-reduced fields that lag
+  // behind outbox/recentSynced by definition (that's the whole point of
+  // both). Without this, saving a VIN edit could show "✓ Synced" (the
+  // event really did reach the provider) while the header still showed
+  // the old value for however long the server's own read takes to catch
+  // up -- confusing, and easy to mistake for the edit having silently
+  // failed. Overlaying pending + recently-synced VehicleIdentified/
+  // odometer data in event-time order mirrors ovpf_core.reduce()'s exact
+  // folding logic, so the header shows what's already true from this
+  // browser's own perspective, not what the server's read has caught up to.
+  const pendingVehicleEvents = [...outbox.map(i => i.ev), ...recentSynced.map(i => i.ev)]
+    .slice().sort((a, b) => (a.occurredAt || "").localeCompare(b.occurredAt || ""));
+  let v = { ...(state.vehicle || {}) };
+  let mileageState = state.mileage || null;
+  for (const ev of pendingVehicleEvents) {
+    const d = ev.data || {};
+    if (ev.type === "VehicleIdentified") v = { ...v, ...(d.vehicle || d) };
+    let od = null;
+    if (d.odometer && typeof d.odometer.value === "number") od = [d.odometer.value, d.odometer.unit || "KMT"];
+    else if (ev.type === "OdometerReading" && typeof d.value === "number") od = [d.value, d.unit || "KMT"];
+    if (od && (!mileageState || od[0] > mileageState.value)) mileageState = { value: od[0], unit: od[1] };
+  }
+  const desc = [v.modelYear, v.make, v.model].filter(Boolean).map(esc).join(" ");
+  const mileage = mileageState ? `${esc(mileageState.value)} ${esc(mileageState.unit)}` : "unknown";
 
   const outboxTimeline = outbox.map(item => ({
     at: item.ev.occurredAt, type: item.ev.type, producer: item.ev.producer?.name,
@@ -713,7 +800,9 @@ async function renderPassport(app, id) {
     <div class="no-print" id="user-signin-box">
       <p class="qr-caption">Adding info and logging events works fully offline, no login needed --
       signing in is only for pushing this passport to a cloud provider. Any email works,
-      just to prove you control it: a one-time code, no password.</p>
+      just to prove you control it: a one-time code, no password. A workshop's mechanic or
+      owner should sign in from <em>that workshop's own page</em> instead, to get
+      verified attribution -- this box only ever grants a plain personal identity.</p>
       <div class="row">
         <input id="user-otp-email" type="email" placeholder="your email" style="flex:1">
         <button id="user-otp-request-btn">Send code</button>
@@ -944,6 +1033,13 @@ async function verifyIntegrity(id, btn, resultEl) {
   resultEl.textContent = "Fetching the raw log and checking it in this browser…";
   try {
     const resp = await fetch(`/v1/passports/${id}/export`);
+    if (resp.status === 404) {
+      // A locally-created, not-yet-synced passport (see createPassport)
+      // has nothing to export yet -- that's not a failure, just nothing
+      // to verify until it's pushed to this provider.
+      resultEl.textContent = "Not yet synced to this provider -- nothing to verify yet.";
+      return;
+    }
     if (!resp.ok) throw new Error(`export failed: HTTP ${resp.status}`);
     const text = await resp.text();
     const events = text.split("\n").filter(Boolean).map(l => JSON.parse(l));
@@ -1279,6 +1375,7 @@ async function main() {
   }
   return renderHome(app);
 }
+initNavSignin();
 main();
 </script>
 </body>
