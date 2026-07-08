@@ -557,7 +557,11 @@ function renderAuthStatus() {
   // representatives of the domain/workshop, not named individuals with
   // a role to announce in the corner of every page.
   if (ws) parts.push(t("nav_workshop_identity", { email: esc(ws.email || ""), domain: esc(ws.domain) }));
-  if (us) parts.push(esc(us.email));
+  // The generic (non-workshop) session is a separate, email-scoped login
+  // (see setUserSession) -- signing into both with the same address is
+  // the common case (e.g. via the workshop's own OTP box), and showing
+  // that email twice in the corner reads as a bug, not two identities.
+  if (us && (!ws || us.email !== ws.email)) parts.push(esc(us.email));
   if (!parts.length) {
     el.innerHTML = `${t("nav_not_signed_in")} · <a href="#" id="nav-signin-toggle">${t("nav_sign_in")}</a>`;
     document.getElementById("nav-signin-toggle").onclick = (e) => {
