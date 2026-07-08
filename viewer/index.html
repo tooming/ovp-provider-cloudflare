@@ -679,6 +679,19 @@ async function renderPassport(app, id) {
       <div class="field">Mileage</div><div>${mileage}</div>
       ${faults ? `<div class="field">Open faults</div><ul>${faults}</ul>` : ""}
     </div>
+    <p class="no-print"><button id="vehicle-edit-toggle-btn">Edit vehicle info</button></p>
+    <div class="no-print" id="vehicle-edit-box" style="display:none">
+      <p>Add or correct VIN/make/model/year -- appends a <code>VehicleIdentified</code>
+      event; the original genesis event is never touched.</p>
+      <div class="row">
+        <input id="edit-vin" placeholder="VIN" value="${esc(v.vin || "")}">
+        <input id="edit-make" placeholder="Make" value="${esc(v.make || "")}">
+        <input id="edit-model" placeholder="Model" value="${esc(v.model || "")}">
+        <input id="edit-year" placeholder="Year" style="width:5rem" value="${esc(v.modelYear || "")}">
+        <button id="edit-btn">Save</button>
+      </div>
+      <p id="edit-status" class="error"></p>
+    </div>
     <div class="qr-box"><canvas id="qr"></canvas></div>
     <div class="qr-caption">passport sticker (scan to open this page)</div>
     <div class="row no-print">
@@ -688,18 +701,6 @@ async function renderPassport(app, id) {
     </div>
 
     <div class="no-print">
-      <h2>Vehicle info</h2>
-      <p>Add or correct VIN/make/model/year -- appends a <code>VehicleIdentified</code>
-      event; the original genesis event is never touched.</p>
-      <div class="row">
-        <input id="edit-vin" placeholder="VIN">
-        <input id="edit-make" placeholder="Make">
-        <input id="edit-model" placeholder="Model">
-        <input id="edit-year" placeholder="Year" style="width:5rem">
-        <button id="edit-btn">Save</button>
-      </div>
-      <p id="edit-status" class="error"></p>
-
       <h2>Log an event</h2>
       <div class="row">
         <select id="log-type">
@@ -740,6 +741,13 @@ async function renderPassport(app, id) {
     copyToClipboard(location.href, document.getElementById("qr-copy-btn"));
   document.getElementById("print-btn").onclick = () => window.print();
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
+  const vehicleEditToggleBtn = document.getElementById("vehicle-edit-toggle-btn");
+  const vehicleEditBox = document.getElementById("vehicle-edit-box");
+  vehicleEditToggleBtn.onclick = () => {
+    const showing = vehicleEditBox.style.display !== "none";
+    vehicleEditBox.style.display = showing ? "none" : "block";
+    vehicleEditToggleBtn.textContent = showing ? "Edit vehicle info" : "Hide";
+  };
   document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
   document.getElementById("verify-integrity-btn").onclick = () => verifyIntegrity(
     id, document.getElementById("verify-integrity-btn"), document.getElementById("verify-integrity-result"));
