@@ -551,6 +551,13 @@ async function renderPassport(app, id) {
     } else {
       state = r.body;
       localStorage.setItem(cacheKey, JSON.stringify(state));
+      // Positive proof the provider already knows this passport -- e.g.
+      // registered from a different browser/device, or by qr.py/OpenDiag
+      // directly. isRegistered is otherwise just a local cache of *this*
+      // browser's own ensureRegistered calls, so without this it stays
+      // false forever for a passport this browser never registered
+      // itself, even once a real GET here proves it's long since synced.
+      markRegistered(id);
     }
   } catch {
     // Offline and the very fetch() threw -- fall back to the last copy this
