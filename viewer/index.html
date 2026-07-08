@@ -27,8 +27,11 @@
   button { font: inherit; padding: 0.35rem 0.9rem; border-radius: 6px; border: 1px solid #8886;
            background: #4a90d9; color: #fff; cursor: pointer; }
   button:disabled { opacity: 0.6; cursor: default; }
-  nav { font-size: 0.85rem; margin-bottom: 1rem; }
+  nav { font-size: 0.85rem; margin-bottom: 1rem; display: flex;
+        justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.3rem 1rem; }
   nav a { margin-right: 1rem; }
+  nav .links { flex: 1; }
+  #auth-status { color: #666; white-space: nowrap; }
   .badge-verified { display: inline-block; font-size: 0.72rem; background: #1a7f37; color: #fff;
                      border-radius: 4px; padding: 0.05rem 0.4rem; margin-left: 0.4rem; }
   .badge-pending { display: inline-block; font-size: 0.72rem; background: #8a6d00; color: #fff;
@@ -58,7 +61,10 @@
 </style>
 </head>
 <body>
-<nav class="no-print"><a href="/">Passport home</a><a href="/workshop">Register a workshop</a></nav>
+<nav class="no-print">
+  <span class="links"><a href="/">Passport home</a><a href="/workshop">Register a workshop</a></span>
+  <span id="auth-status"></span>
+</nav>
 <div id="app">Loading…</div>
 
 <script>
@@ -98,6 +104,19 @@ function fmtTime(iso) {
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   }));
+}
+
+// None of these input rows are real <form> elements (just flex divs), so
+// Enter did nothing by default -- wire each group's inputs to click its
+// own button instead. Safe to call for ids that don't exist on the
+// current page (e.g. a hidden step not yet revealed).
+function enterSubmits(inputIds, buttonId) {
+  const btn = document.getElementById(buttonId);
+  if (!btn) return;
+  for (const id of inputIds) {
+    const el = document.getElementById(id);
+    if (el) el.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); btn.click(); } };
+  }
 }
 
 async function copyToClipboard(text, btn) {
@@ -167,6 +186,33 @@ function bestAuthSession(producerDomain) {
   const us = getUserSession();
   if (us) return us;
   return ws || null;
+}
+
+// A persistent, always-visible top-right indicator -- previously "who's
+// signed in" was only ever shown inline on whichever specific page cared
+// (the workshop status page, the passport page's log-domain hint), which
+// meant leaving that page hid the fact a session was still active at
+// all. Lives in <nav>, outside #app, so it survives every page's own
+// render() replacing #app's innerHTML -- call this again after any
+// sign-in/out action so it never goes stale.
+function renderAuthStatus() {
+  const el = document.getElementById("auth-status");
+  if (!el) return;
+  const ws = getWorkshopSession();
+  const us = getUserSession();
+  const parts = [];
+  if (ws) parts.push(ws.role === "mechanic"
+    ? `mechanic ${esc(ws.name || ws.domain)} @ ${esc(ws.domain)}`
+    : `workshop owner @ ${esc(ws.domain)}`);
+  if (us) parts.push(esc(us.email));
+  if (!parts.length) { el.textContent = "Not signed in"; return; }
+  el.innerHTML = `${parts.join(" · ")} <a href="#" id="auth-signout-link">sign out</a>`;
+  document.getElementById("auth-signout-link").onclick = (e) => {
+    e.preventDefault();
+    clearWorkshopSession();
+    clearUserSession();
+    main(); // re-render the current page too -- its own content may depend on session state
+  };
 }
 
 async function api(path, opts) {
@@ -511,9 +557,7 @@ function renderHome(app) {
     if (!uuid) { status.textContent = "That doesn't look like a passport id or link."; return; }
     location.href = `/p/${uuid}`;
   };
-  document.getElementById("open-id").onkeydown = (e) => {
-    if (e.key === "Enter") document.getElementById("open-btn").click();
-  };
+  enterSubmits(["open-id"], "open-btn");
   document.getElementById("scan-btn").onclick = () => {
     document.getElementById("scan-area").style.display = "block";
     document.getElementById("scan-btn").style.display = "none";
@@ -748,6 +792,7 @@ async function renderPassport(app, id) {
     copyToClipboard(location.href, document.getElementById("qr-copy-btn"));
   document.getElementById("print-btn").onclick = () => window.print();
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
+  enterSubmits(["edit-vin", "edit-make", "edit-model", "edit-year"], "edit-btn");
   const vehicleEditToggleBtn = document.getElementById("vehicle-edit-toggle-btn");
   const vehicleEditBox = document.getElementById("vehicle-edit-box");
   vehicleEditToggleBtn.onclick = () => {
@@ -756,6 +801,7 @@ async function renderPassport(app, id) {
     vehicleEditToggleBtn.textContent = showing ? "Edit vehicle info" : "Hide";
   };
   document.getElementById("log-btn").onclick = () => submitLogEvent(id, v);
+  enterSubmits(["log-desc", "log-odo", "log-domain"], "log-btn");
   document.getElementById("verify-integrity-btn").onclick = () => verifyIntegrity(
     id, document.getElementById("verify-integrity-btn"), document.getElementById("verify-integrity-result"));
 
@@ -799,12 +845,16 @@ async function renderPassport(app, id) {
     userOtpVerifyBtn.disabled = false;
     if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
     setUserSession(email, rr.body.token);
+    renderAuthStatus();
     renderPassport(app, id);
   };
+  enterSubmits(["user-otp-email"], "user-otp-request-btn");
+  enterSubmits(["user-otp-code"], "user-otp-verify-btn");
   const userSignoutLink = document.getElementById("user-signout-link");
   if (userSignoutLink) userSignoutLink.onclick = (e) => {
     e.preventDefault();
     clearUserSession();
+    renderAuthStatus();
     renderPassport(app, id);
   };
   document.querySelectorAll(".discard-btn").forEach(btn => {
@@ -940,7 +990,9 @@ async function submitVehicleInfo(id) {
   if (!Object.values(facts).some(Boolean)) { status.textContent = "Enter at least one field."; return; }
   const vehicle = { type: "Vehicle" };
   for (const [k, val] of Object.entries(facts)) if (val) vehicle[k] = val;
-  const ev = envelope(id, "VehicleIdentified", { vehicle }, { type: "Manual", name: "web" });
+  const userSession = getUserSession();
+  const producer = userSession ? { type: "Owner", name: userSession.email } : { type: "Manual", name: "web" };
+  const ev = envelope(id, "VehicleIdentified", { vehicle }, producer);
   await enqueueEvent(id, ev);
 }
 
@@ -963,10 +1015,17 @@ async function submitLogEvent(id, currentVehicle) {
   // only one who can turn that into producer.verified, and only if this
   // request also proves it holds that workshop's secret (see
   // docs/TRUST.md). Submitting verified:true here would be silently
-  // stripped server-side regardless.
+  // stripped server-side regardless. A signed-in personal identity (no
+  // domain claim) gets attributed by email instead of the generic "web"
+  // -- it's not a *verified* producer (nothing checks a personal OTP
+  // proves anything about the vehicle itself), just a real name instead
+  // of an anonymous one, same spirit as a git commit's author.
+  const userSession = getUserSession();
   const producer = domain
     ? { type: "Workshop", domain, name: domain }
-    : { type: "Manual", name: "web" };
+    : userSession
+      ? { type: "Owner", name: userSession.email }
+      : { type: "Manual", name: "web" };
   const ev = envelope(id, type, data, producer);
   // Auth is resolved fresh at flush time (see bestAuthSession), not here
   // -- this event can be queued and shown immediately with no session at
@@ -1003,6 +1062,7 @@ function renderWorkshopForm(app) {
     if (!r.ok) { status.textContent = `Error: ${r.body?.error || r.status}`; return; }
     location.href = `/workshop/${encodeURIComponent(r.body.domain)}`;
   };
+  enterSubmits(["ws-domain", "ws-name"], "ws-register-btn");
   document.getElementById("ws-existing-link").onclick = (e) => {
     e.preventDefault();
     const domain = prompt("Domain to look up:");
@@ -1164,11 +1224,18 @@ Value: ${esc(w.dnsRecord.value)}</code>
     if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
     setWorkshopSession(w.domain, rr.body.token,
       { role: rr.body.role, name: rr.body.name, mechanicId: rr.body.mechanicId });
+    renderAuthStatus();
     renderWorkshopStatus(app, domain);
   };
+  enterSubmits(["otp-email"], "otp-request-btn");
+  enterSubmits(["otp-code"], "otp-verify-btn");
 
   const signoutBtn = document.getElementById("ws-signout-btn");
-  if (signoutBtn) signoutBtn.onclick = () => { clearWorkshopSession(); renderWorkshopStatus(app, domain); };
+  if (signoutBtn) signoutBtn.onclick = () => {
+    clearWorkshopSession();
+    renderAuthStatus();
+    renderWorkshopStatus(app, domain);
+  };
 
   const addBtn = document.getElementById("ws-mech-add-btn");
   if (addBtn) addBtn.onclick = async () => {
@@ -1184,6 +1251,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
     if (!rr.ok) { status.textContent = `Error: ${rr.body?.error || rr.status}`; return; }
     renderWorkshopStatus(app, domain);
   };
+  enterSubmits(["ws-mech-email", "ws-mech-name"], "ws-mech-add-btn");
 
   document.querySelectorAll(".ws-remove-mech").forEach(btn => {
     btn.onclick = async () => {
@@ -1197,6 +1265,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
 }
 
 async function main() {
+  renderAuthStatus();
   const app = document.getElementById("app");
   let m;
   if ((m = location.pathname.match(/^\/p\/([0-9a-fA-F-]{36})/))) {
