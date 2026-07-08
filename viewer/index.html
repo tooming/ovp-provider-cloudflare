@@ -690,13 +690,17 @@ function markRegistered(id) { localStorage.setItem(registeredKey(id), "1"); }
 function isRegistered(id) { return localStorage.getItem(registeredKey(id)) === "1"; }
 
 // Favorites are purely a local bookmark list -- there's no server-side
-// concept of "my passports" (there's no account to hang one off of, see
-// the whole local-first/OTP-only design elsewhere in this file), just a
-// quick way back to specific passports from the home page without
-// re-scanning a sticker or re-pasting an id/link every time. label is a
-// best-effort snapshot of the description at the moment it was favorited
-// (not kept live-updated -- it's just there so the home page list isn't
-// a wall of bare uuids).
+// concept of "my passports" or "my workshops" (there's no account to hang
+// one off of, see the whole local-first/OTP-only design elsewhere in this
+// file), just a quick way back to specific passports *or* workshops from
+// the home page without re-scanning a sticker or re-pasting an id/link/
+// domain every time. label is a best-effort snapshot of the
+// description/name at the moment it was favorited (not kept live-updated
+// -- it's just there so the home page list isn't a wall of bare
+// uuids/domains). kind distinguishes the two ("passport" is the default,
+// for entries saved before workshops could be favorited too); passport
+// ids and workshop domains never collide, but kind is still checked so
+// removing one doesn't accidentally remove the other.
 const FAVORITES_KEY = "ovp_favorites";
 function loadFavorites() {
   try { return JSON.parse(localStorage.getItem(FAVORITES_KEY)) || []; } catch { return []; }
@@ -705,14 +709,16 @@ function saveFavorites(items) {
   if (items.length) localStorage.setItem(FAVORITES_KEY, JSON.stringify(items));
   else localStorage.removeItem(FAVORITES_KEY);
 }
-function isFavorite(id) { return loadFavorites().some(f => f.id === id); }
-function addFavorite(id, label) {
-  const items = loadFavorites().filter(f => f.id !== id);
-  items.unshift({ id, label: label || id, addedAt: Date.now() });
+function isFavorite(id, kind = "passport") {
+  return loadFavorites().some(f => f.id === id && (f.kind || "passport") === kind);
+}
+function addFavorite(id, label, kind = "passport") {
+  const items = loadFavorites().filter(f => !(f.id === id && (f.kind || "passport") === kind));
+  items.unshift({ id, label: label || id, kind, addedAt: Date.now() });
   saveFavorites(items);
 }
-function removeFavorite(id) {
-  saveFavorites(loadFavorites().filter(f => f.id !== id));
+function removeFavorite(id, kind = "passport") {
+  saveFavorites(loadFavorites().filter(f => !(f.id === id && (f.kind || "passport") === kind)));
 }
 
 // A just-synced event can still be briefly invisible in a fresh GET --
@@ -985,10 +991,12 @@ function renderHome(app) {
     <h1>${t("home_title")}</h1>
     ${favorites.length ? `
     <h2>${t("favorites_heading")}</h2>
-    <ul>${favorites.map(f =>
-      `<li><a href="/p/${esc(f.id)}">${esc(f.label)}</a> ` +
-      `<button class="no-print favorite-remove-btn" data-id="${esc(f.id)}">${t("favorites_remove_btn")}</button></li>`
-    ).join("")}</ul>` : ""}
+    <ul>${favorites.map(f => {
+      const kind = f.kind || "passport";
+      const href = kind === "workshop" ? `/workshop/${esc(f.id)}` : `/p/${esc(f.id)}`;
+      return `<li><a href="${href}">${esc(f.label)}</a> ` +
+        `<button class="no-print favorite-remove-btn" data-id="${esc(f.id)}" data-kind="${kind}">${t("favorites_remove_btn")}</button></li>`;
+    }).join("")}</ul>` : ""}
     <p>${t("home_intro", { code: "<code>/p/&lt;uuid&gt;</code>" })}</p>
     <button id="create-btn">${t("home_create_btn")}</button>
     <p id="create-status" class="error"></p>
@@ -1018,7 +1026,7 @@ function renderHome(app) {
   };
   enterSubmits(["open-id"], "open-btn");
   document.querySelectorAll(".favorite-remove-btn").forEach(btn => {
-    btn.onclick = () => { removeFavorite(btn.dataset.id); renderHome(app); };
+    btn.onclick = () => { removeFavorite(btn.dataset.id, btn.dataset.kind); renderHome(app); };
   });
   document.getElementById("scan-btn").onclick = () => {
     document.getElementById("scan-area").style.display = "block";
@@ -1648,7 +1656,9 @@ Value: ${esc(w.dnsRecord.value)}</code>
     <p id="ws-mech-status" class="error"></p>` : "";
 
   app.innerHTML = `
-    <h1>${esc(w.name)}${isOwner ? ` <button id="ws-rename-toggle-btn" class="no-print">${t("ws_rename_btn")}</button>` : ""}</h1>
+    <h1>${esc(w.name)}
+      <button id="ws-favorite-btn" class="no-print">${isFavorite(w.domain, "workshop") ? t("favorite_remove_btn") : t("favorite_add_btn")}</button>
+      ${isOwner ? `<button id="ws-rename-toggle-btn" class="no-print">${t("ws_rename_btn")}</button>` : ""}</h1>
     ${isOwner ? `
     <div class="no-print" id="ws-rename-box" style="display:none">
       <div class="row">
@@ -1666,6 +1676,12 @@ Value: ${esc(w.dnsRecord.value)}</code>
     ${mechanicsBlock}
     <p><a href="/workshop">${t("ws_register_another")}</a></p>
   `;
+
+  document.getElementById("ws-favorite-btn").onclick = () => {
+    const btn = document.getElementById("ws-favorite-btn");
+    if (isFavorite(w.domain, "workshop")) { removeFavorite(w.domain, "workshop"); btn.textContent = t("favorite_add_btn"); }
+    else { addFavorite(w.domain, w.name, "workshop"); btn.textContent = t("favorite_remove_btn"); }
+  };
 
   const renameToggleBtn = document.getElementById("ws-rename-toggle-btn");
   if (renameToggleBtn) renameToggleBtn.onclick = () => {
