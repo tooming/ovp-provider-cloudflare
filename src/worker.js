@@ -40,19 +40,17 @@ function eventKey(id, ev) {
   return `${eventKeyPrefix(id)}${ev.recordedAt}#${ev.id}`;
 }
 
-async function loadEvents(env, id) {
-  // KNOWN LIMITATION: this is read *before* computing a new event's
-  // prevHash (see appendEvent), so a stale read of "the latest event"
-  // computes a prevHash pointing at the wrong predecessor -- observed
-  // live: two events appended to the same passport within roughly a
-  // minute of each other silently broke the chain. Workers KV's list()
-  // is only eventually consistent (Cloudflare documents up to ~60s
-  // propagation) with no strongly-consistent-read option at all, unlike
-  // DynamoDB's ConsistentRead (see app.py's _load_events) -- there is no
-  // equivalent fix available within the KV API itself. A real fix needs
-  // per-passport serialized writes, which means Durable Objects instead
-  // of KV for this specific read-modify-write path; that's a genuine
-  // migration, not a patch, and hasn't been done here yet.
+// Reads KV directly via list() -- only used as PassportSequencer's one-time
+// bootstrap fallback (see the DO's _events()) when its own storage hasn't
+// cached this passport's events yet. Never call this directly elsewhere:
+// KV's list() is only eventually consistent (Cloudflare documents up to
+// ~60s propagation) with no strongly-consistent-read option, unlike
+// DynamoDB's ConsistentRead (see app.py's _load_events) -- a caller reading
+// straight from KV (rather than through the DO) can see stale data, not
+// just right after its own write but on a plain page refresh minutes
+// later too, if some other request wrote in between. See loadEvents below
+// for the actual, consistent read path everything else uses.
+async function loadEventsFromKV(env, id) {
   const events = [];
   let cursor;
   do {
@@ -65,6 +63,14 @@ async function loadEvents(env, id) {
   } while (cursor);
   events.sort((a, b) => (a.recordedAt || "").localeCompare(b.recordedAt || "") || (a.id || "").localeCompare(b.id || ""));
   return events;
+}
+
+// The actual read path: PassportSequencer's own storage, not KV -- see its
+// module comment. Strongly consistent for every caller (not just the
+// request that just wrote), so a page refresh (or a completely separate
+// browser) never sees a stale list the way a raw KV list() read could.
+async function loadEvents(env, id) {
+  return sequencerRequest(env, "passport", id, { op: "read" });
 }
 
 async function getMeta(env, id) {
@@ -135,7 +141,9 @@ function newWorkshopEvent(type, data) {
   return { id: "urn:uuid:" + crypto.randomUUID(), type, occurredAt: now, recordedAt: now, data };
 }
 
-async function loadWorkshopEvents(env, domain) {
+// Bootstrap fallback only -- see loadEventsFromKV's comment. Never call
+// directly; use loadWorkshopEvents below.
+async function loadWorkshopEventsFromKV(env, domain) {
   const events = [];
   let cursor;
   do {
@@ -148,6 +156,11 @@ async function loadWorkshopEvents(env, domain) {
   } while (cursor);
   events.sort((a, b) => (a.recordedAt || "").localeCompare(b.recordedAt || "") || (a.id || "").localeCompare(b.id || ""));
   return events;
+}
+
+// See loadEvents' comment -- same DO-backed, strongly consistent read path.
+async function loadWorkshopEvents(env, domain) {
+  return sequencerRequest(env, "workshop", domain, { op: "read" });
 }
 
 async function appendWorkshopEvent(env, domain, ev) {
@@ -897,54 +910,83 @@ async function exportPassport(request, env, id) {
   return new Response(ndjson, { status: 200, headers: { "content-type": "application/x-ndjson" } });
 }
 
-// --- Hash-chain sequencing, via Durable Object -----------------------------
-// The real fix for a real bug: two events appended to the same passport (or
-// workshop) within KV's eventual-consistency window (Cloudflare documents up
-// to ~60s propagation for list()) could each read a "latest event" that
-// doesn't yet reflect the other, computing a prevHash that points at the
-// wrong predecessor and silently breaking the chain -- observed live in
-// production. KV has no strongly-consistent-read or conditional-write
-// primitive to fix this with a query flag (unlike DynamoDB's ConsistentRead
-// on the AWS provider). Durable Objects do guarantee something KV
-// fundamentally can't: every request routed to the *same* DO id is
-// processed strictly one at a time (input gates), so this becomes the
-// single authoritative source for "what's the current head hash" -- no
-// concurrent request can ever observe a stale one.
-//
-// Event *content* still lives in KV as before (cheap, globally-readable) --
-// the DO's own storage holds nothing but the tiny head pointer, bootstrapped
-// once from KV the first time a given id's DO instance ever runs (covers
-// passports/workshops that already existed before this migration), then
-// authoritative forever after since DO storage is itself strongly
-// consistent within a single instance.
+// --- Reads AND writes, via Durable Object -----------------------------------
+// The real fix for two real bugs, both the same root cause: Workers KV's
+// list() is only eventually consistent (Cloudflare documents up to ~60s
+// propagation), with no strongly-consistent-read or conditional-write
+// primitive at all, unlike DynamoDB's ConsistentRead (see app.py's
+// _load_events).
+//   1. Two events appended to the same passport/workshop close together
+//      could each read a stale "latest event" and compute a prevHash
+//      pointing at the wrong predecessor, silently breaking the hash
+//      chain -- observed live in production.
+//   2. Reading a passport/workshop back (a page refresh, a *different*
+//      browser, anything that isn't the request that just wrote) could
+//      just as easily see a stale list for a while after any recent
+//      write, from anyone -- also observed live, as a rename or a
+//      mechanic add/remove appearing to "not save" for up to a minute.
+// Durable Objects guarantee something KV fundamentally can't: every
+// request routed to the *same* DO id is processed strictly one at a time
+// (input gates), and the DO's own storage is itself strongly consistent.
+// So this DO now holds the full, authoritative event list for its
+// passport/workshop -- not just a head-hash pointer -- and every read in
+// this file goes through it (loadEvents/loadWorkshopEvents), not KV's
+// list(). Writes still also land in KV afterward (see appendEvent/
+// appendWorkshopEvent) purely as a cheap, durable, globally-listable
+// copy -- nothing in this file reads it back that way anymore.
 export class PassportSequencer {
   constructor(state, env) {
     this.state = state;
     this.env = env;
   }
 
-  async fetch(request) {
-    const { kind, key, event } = await request.json();
-    let head = await this.state.storage.get("head");
-    if (head === undefined) {
-      const existing = kind === "workshop"
-        ? await loadWorkshopEvents(this.env, key)
-        : await loadEvents(this.env, key);
-      head = existing.length ? { hash: existing[existing.length - 1].hash } : null;
+  async _events(kind, key) {
+    let events = await this.state.storage.get("events");
+    if (events === undefined) {
+      // First time this exact DO instance has run -- bootstrap once from
+      // KV (covers passports/workshops that already existed before this
+      // migration), authoritative forever after since DO storage doesn't
+      // have KV's consistency problem.
+      events = kind === "workshop"
+        ? await loadWorkshopEventsFromKV(this.env, key)
+        : await loadEventsFromKV(this.env, key);
+      await this.state.storage.put("events", events);
     }
-    const prevHash = head ? head.hash : null;
+    return events;
+  }
+
+  async fetch(request) {
+    const { op, kind, key, event } = await request.json();
+    const events = await this._events(kind, key);
+    if (op === "read") return json(events);
+    const prevHash = events.length ? events[events.length - 1].hash : null;
     delete event.hash;
     if (prevHash) event.prevHash = prevHash; else delete event.prevHash;
     event.hash = await ovpf.eventHash(event);
-    await this.state.storage.put("head", { hash: event.hash });
+    events.push(event);
+    await this.state.storage.put("events", events);
     return json(event);
   }
 }
 
-async function sealEvent(env, kind, key, event) {
-  const stub = env.PASSPORT_SEQUENCER.get(env.PASSPORT_SEQUENCER.idFromName(`${kind}:${key}`));
-  const resp = await stub.fetch("http://sequencer/", { method: "POST", body: JSON.stringify({ kind, key, event }) });
+async function sequencerRequest(env, kind, key, payload) {
+  // Workshop domains must be normalized before becoming a DO id -- the DO
+  // is keyed by this exact string (unlike KV, whose key-builders already
+  // normalize internally), so an unnormalized caller (e.g. a mixed-case
+  // domain straight from a URL path segment) would silently address a
+  // *different* DO instance than a normalized one, forking a logical
+  // workshop's storage in two. Passport ids need no such normalization
+  // (already a canonical UUID).
+  const normKey = kind === "workshop" ? workshopDomain(key) : key;
+  const stub = env.PASSPORT_SEQUENCER.get(env.PASSPORT_SEQUENCER.idFromName(`${kind}:${normKey}`));
+  const resp = await stub.fetch("http://sequencer/", {
+    method: "POST", body: JSON.stringify({ kind, key: normKey, ...payload }),
+  });
   return resp.json();
+}
+
+async function sealEvent(env, kind, key, event) {
+  return sequencerRequest(env, kind, key, { op: "append", event });
 }
 
 export default {
