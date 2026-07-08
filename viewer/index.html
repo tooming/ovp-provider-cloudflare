@@ -77,8 +77,8 @@
   <span class="links"><a href="/" id="nav-home-link">Passport home</a><a href="/workshop" id="nav-workshop-link">Register a workshop</a></span>
   <span id="auth-status"></span>
   <select id="lang-select" aria-label="Language" style="font:inherit;padding:0.15rem 0.3rem;border-radius:6px;border:1px solid #8886;background:transparent;color:inherit">
-    <option value="en">English</option>
-    <option value="et">Eesti</option>
+    <option value="en">🇬🇧 English</option>
+    <option value="et">🇪🇪 Eesti</option>
   </select>
 </nav>
 <div id="nav-signin-box" class="no-print" style="display:none">
@@ -1595,9 +1595,24 @@ function renderWorkshopForm(app) {
   };
 }
 
-async function renderWorkshopStatus(app, domain) {
+async function renderWorkshopStatus(app, domain, preloaded) {
   app.innerHTML = t("loading_ellipsis");
-  const r = await api(`/v1/workshops/${encodeURIComponent(domain)}`);
+  // A session's own token is what lets the backend decide whether to
+  // reveal actual mechanic emails (see readWorkshop/_workshop_view's
+  // reveal_emails gate) -- without sending it on *this* GET too (not
+  // just on the mutations below), an owner's own page load would always
+  // get back the redacted hasEmail-only list.
+  let session = getWorkshopSession();
+  const authOpts = (session && session.domain === domain)
+    ? { headers: { authorization: `Bearer ${session.token}` } } : undefined;
+  // preloaded lets a just-completed mutation (rename/verify/add/remove
+  // mechanic) hand over the response it already got back -- built from
+  // events already in hand server-side (see registerWorkshop's comment
+  // in worker.js/app.py) -- instead of re-fetching via a fresh GET,
+  // which reads through the same KV list()-backed path that's only
+  // eventually consistent and could still show stale data for a bit.
+  const r = preloaded ? { ok: true, status: 200, body: preloaded }
+    : await api(`/v1/workshops/${encodeURIComponent(domain)}`, authOpts);
   if (r.status === 404) {
     app.innerHTML = `<p class="error">${t("ws_no_such_workshop", { domain: esc(domain) })}</p>
       <p><a href="/workshop">${t("ws_register_it_link")}</a>.</p>`;
@@ -1612,7 +1627,6 @@ async function renderWorkshopStatus(app, domain) {
   // admin vs. a mechanic's own attribution) get shown. A stale, expired,
   // or revoked session gets signed out here, with a reason, rather than
   // silently rendering a broken state.
-  let session = getWorkshopSession();
   let who = null;
   let staleNote = "";
   if (session && session.domain === w.domain) {
@@ -1747,7 +1761,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
     });
     renameSaveBtn.disabled = false;
     if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
-    renderWorkshopStatus(app, domain);
+    renderWorkshopStatus(app, domain, rr.body);
   };
   enterSubmits(["ws-rename-input"], "ws-rename-save-btn");
 
@@ -1758,7 +1772,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
     status.textContent = t("ws_checking_dns");
     const vr = await api(`/v1/workshops/${encodeURIComponent(domain)}/verify`, { method: "POST" });
     if (!vr.ok) { status.textContent = t("error_prefix", { msg: vr.body?.error || vr.status }); verifyBtn.disabled = false; return; }
-    if (vr.body.verified) { renderWorkshopStatus(app, domain); return; }
+    if (vr.body.verified) { renderWorkshopStatus(app, domain, vr.body); return; }
     status.textContent = vr.body.checkError
       ? t("ws_dns_check_failed", { msg: vr.body.checkError })
       : t("ws_not_found_yet", { found: JSON.stringify(vr.body.found || []) });
@@ -1819,7 +1833,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
       body: JSON.stringify({ email }),
     });
     if (!rr.ok) { status.textContent = t("error_prefix", { msg: rr.body?.error || rr.status }); return; }
-    renderWorkshopStatus(app, domain);
+    renderWorkshopStatus(app, domain, rr.body);
   };
   enterSubmits(["ws-mech-email"], "ws-mech-add-btn");
 
@@ -1829,7 +1843,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
         method: "DELETE", headers: { authorization: `Bearer ${session.token}` },
       });
       if (!rr.ok) { alert(t("error_prefix", { msg: rr.body?.error || rr.status })); return; }
-      renderWorkshopStatus(app, domain);
+      renderWorkshopStatus(app, domain, rr.body);
     };
   });
 }
