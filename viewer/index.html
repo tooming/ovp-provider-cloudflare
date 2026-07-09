@@ -195,10 +195,6 @@ const I18N = {
     sync_never: "Not yet synced to any provider — add info or log an event above to start.",
     signin_box_note: "Adding info and logging events works fully offline, no login needed -- signing in is only for pushing this passport to a cloud provider. Any email works, just to prove you control it: a one-time code, no password. A workshop's mechanic or owner should sign in from {em}that workshop's own page{emEnd} instead, to get verified attribution -- this box only ever grants a plain personal identity.",
     printed_at: "Printed {time} — full history: {url}",
-    field_vin: "VIN",
-    field_not_set: "(not set)",
-    field_mileage: "Mileage",
-    field_mileage_unknown: "unknown",
     field_open_faults: "Open faults",
     edit_vehicle_info_toggle: "Edit vehicle info",
     edit_vehicle_info_hide: "Hide",
@@ -352,10 +348,6 @@ const I18N = {
     sync_never: "Pole veel ühegi teenusepakkujaga sünkroonitud — alusta lisades teavet või sündmuse ülalpool.",
     signin_box_note: "Teabe lisamine ja sündmuste logimine töötab täiesti võrguühenduseta, sisselogimist pole vaja -- sisselogimine on vajalik ainult sõidukipassi pilve saatmiseks. Iga e-post sobib, see tõestab vaid, et kontrollid seda: ühekordne kood, ilma paroolita. Töökoja mehaanik või omanik peaks sisse logima {em}selle töökoja enda lehelt{emEnd}, et saada kinnitatud omistus -- see kast annab alati ainult tavalise isikliku identiteedi.",
     printed_at: "Prinditud {time} — täielik ajalugu: {url}",
-    field_vin: "VIN",
-    field_not_set: "(pole määratud)",
-    field_mileage: "Läbisõit",
-    field_mileage_unknown: "teadmata",
     field_open_faults: "Avatud vead",
     edit_vehicle_info_toggle: "Muuda sõiduki andmeid",
     edit_vehicle_info_hide: "Peida",
@@ -1131,32 +1123,29 @@ async function renderPassport(app, id) {
   const recentSynced = loadRecentSynced(id).filter(item => !alreadyServerSide(item.ev.occurredAt, item.ev.type));
   saveRecentSynced(id, recentSynced); // prune anything the server now reflects
 
-  // The header card (VIN/make/model/year/mileage) otherwise only ever
-  // reads state.vehicle/state.mileage -- server-reduced fields that lag
-  // behind outbox/recentSynced by definition (that's the whole point of
-  // both). Without this, saving a VIN edit could show "✓ Synced" (the
-  // event really did reach the provider) while the header still showed
-  // the old value for however long the server's own read takes to catch
-  // up -- confusing, and easy to mistake for the edit having silently
-  // failed. Overlaying pending + recently-synced VehicleIdentified/
-  // odometer data in event-time order mirrors ovpf_core.reduce()'s exact
-  // folding logic, so the header shows what's already true from this
-  // browser's own perspective, not what the server's read has caught up to.
+  // The header card (VIN/make/model/year) otherwise only ever reads
+  // state.vehicle -- server-reduced fields that lag behind outbox/
+  // recentSynced by definition (that's the whole point of both). Without
+  // this, saving a VIN edit could show "✓ Synced" (the event really did
+  // reach the provider) while the header still showed the old value for
+  // however long the server's own read takes to catch up -- confusing,
+  // and easy to mistake for the edit having silently failed. Overlaying
+  // pending + recently-synced VehicleIdentified data in event-time order
+  // mirrors ovpf_core.reduce()'s exact folding logic, so the header shows
+  // what's already true from this browser's own perspective, not what the
+  // server's read has caught up to.
   const pendingVehicleEvents = [...outbox.map(i => i.ev), ...recentSynced.map(i => i.ev)]
     .slice().sort((a, b) => (a.occurredAt || "").localeCompare(b.occurredAt || ""));
   let v = { ...(state.vehicle || {}) };
-  let mileageState = state.mileage || null;
   for (const ev of pendingVehicleEvents) {
     const d = ev.data || {};
     if (ev.type === "VehicleIdentified") v = { ...v, ...(d.vehicle || d) };
-    let od = null;
-    if (d.odometer && typeof d.odometer.value === "number") od = [d.odometer.value, d.odometer.unit || "KMT"];
-    else if (ev.type === "OdometerReading" && typeof d.value === "number") od = [d.value, d.unit || "KMT"];
-    if (od && (!mileageState || od[0] > mileageState.value)) mileageState = { value: od[0], unit: od[1] };
   }
   const desc = [v.modelYear, v.make, v.model].filter(Boolean).map(esc).join(" ");
   const heading = v.nickname ? esc(v.nickname) : (desc || t("passport_default_heading"));
-  const mileage = mileageState ? `${esc(mileageState.value)} ${esc(mileageState.unit)}` : t("field_mileage_unknown");
+  // Only include desc here when it isn't already the heading (no nickname
+  // set), so make/model/year never prints twice.
+  const subheading = [v.nickname && desc, v.vin ? esc(v.vin) : null].filter(Boolean).join(" · ");
 
   const outboxTimeline = outbox.map(item => ({
     at: item.ev.occurredAt, type: item.ev.type, producer: item.ev.producer?.name,
@@ -1227,7 +1216,7 @@ async function renderPassport(app, id) {
 
   app.innerHTML = `
     <h1>${heading}</h1>
-    ${v.nickname && desc ? `<p class="qr-caption">${desc}</p>` : ""}
+    ${subheading ? `<p class="qr-caption">${subheading}</p>` : ""}
     ${syncStatus ? `<p id="sync-status" class="sync-status no-print">${syncStatus}</p>` : ""}
     ${needsSignIn ? `
     <div class="no-print" id="user-signin-box">
@@ -1243,11 +1232,7 @@ async function renderPassport(app, id) {
       <p id="user-otp-status" class="error"></p>
     </div>` : ""}
     <p class="print-only qr-caption">${t("printed_at", { time: fmtTime(new Date().toISOString()), url: esc(location.href) })}</p>
-    <div class="card">
-      <div class="field">${t("field_vin")}</div><div>${esc(v.vin) || t("field_not_set")}</div>
-      <div class="field">${t("field_mileage")}</div><div>${mileage}</div>
-      ${faults ? `<div class="field">${t("field_open_faults")}</div><ul>${faults}</ul>` : ""}
-    </div>
+    ${faults ? `<div class="card"><div class="field">${t("field_open_faults")}</div><ul>${faults}</ul></div>` : ""}
     <p class="no-print"><button id="vehicle-edit-toggle-btn">${t("edit_vehicle_info_toggle")}</button></p>
     <div class="no-print" id="vehicle-edit-box" style="display:none">
       <p>${t("edit_vehicle_info_note", { code: "<code>VehicleIdentified</code>" })}</p>
