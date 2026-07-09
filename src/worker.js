@@ -959,6 +959,18 @@ export class PassportSequencer {
     const { op, kind, key, event } = await request.json();
     const events = await this._events(kind, key);
     if (op === "read") return json(events);
+    // Idempotent by event id -- found live, duplicated a real passport's
+    // event count 40 -> 80: this DO is the authoritative store (see the
+    // block comment above), but had no duplicate check at all, so a
+    // client re-pushing events it already believed were synced (e.g.
+    // after a fresh local cache had no synced-ids record yet) got a
+    // second copy appended here every time, with a *different* hash
+    // (chained off a new prevHash), even though appendEvent()'s own KV
+    // existence check below sometimes correctly rejected the redundant
+    // KV write -- that check runs after this DO has already committed
+    // the duplicate, so it was never actually enough on its own.
+    const existing = events.find(e => e.id === event.id);
+    if (existing) return json(existing);
     const prevHash = events.length ? events[events.length - 1].hash : null;
     delete event.hash;
     if (prevHash) event.prevHash = prevHash; else delete event.prevHash;
