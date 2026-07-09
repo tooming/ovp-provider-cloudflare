@@ -202,7 +202,8 @@ const I18N = {
     field_open_faults: "Open faults",
     edit_vehicle_info_toggle: "Edit vehicle info",
     edit_vehicle_info_hide: "Hide",
-    edit_vehicle_info_note: "Add or correct VIN/make/model/year -- appends a {code} event; the original genesis event is never touched.",
+    edit_vehicle_info_note: "Add or correct VIN/make/model/year, or give it a nickname -- appends a {code} event; the original genesis event is never touched.",
+    nickname_placeholder: "Nickname",
     vin_placeholder: "VIN",
     make_placeholder: "Make",
     model_placeholder: "Model",
@@ -358,7 +359,8 @@ const I18N = {
     field_open_faults: "Avatud vead",
     edit_vehicle_info_toggle: "Muuda sõiduki andmeid",
     edit_vehicle_info_hide: "Peida",
-    edit_vehicle_info_note: "Lisa või paranda VIN/mark/mudel/aasta -- lisab {code} sündmuse; algset loomissündmust ei muudeta kunagi.",
+    edit_vehicle_info_note: "Lisa või paranda VIN/mark/mudel/aasta, või anna hüüdnimi -- lisab {code} sündmuse; algset loomissündmust ei muudeta kunagi.",
+    nickname_placeholder: "Hüüdnimi",
     vin_placeholder: "VIN",
     make_placeholder: "Mark",
     model_placeholder: "Mudel",
@@ -1153,6 +1155,7 @@ async function renderPassport(app, id) {
     if (od && (!mileageState || od[0] > mileageState.value)) mileageState = { value: od[0], unit: od[1] };
   }
   const desc = [v.modelYear, v.make, v.model].filter(Boolean).map(esc).join(" ");
+  const heading = v.nickname ? esc(v.nickname) : (desc || t("passport_default_heading"));
   const mileage = mileageState ? `${esc(mileageState.value)} ${esc(mileageState.unit)}` : t("field_mileage_unknown");
 
   const outboxTimeline = outbox.map(item => ({
@@ -1223,7 +1226,8 @@ async function renderPassport(app, id) {
   else syncStatus = "";
 
   app.innerHTML = `
-    <h1>${desc || t("passport_default_heading")}</h1>
+    <h1>${heading}</h1>
+    ${v.nickname && desc ? `<p class="qr-caption">${desc}</p>` : ""}
     ${syncStatus ? `<p id="sync-status" class="sync-status no-print">${syncStatus}</p>` : ""}
     ${needsSignIn ? `
     <div class="no-print" id="user-signin-box">
@@ -1248,6 +1252,7 @@ async function renderPassport(app, id) {
     <div class="no-print" id="vehicle-edit-box" style="display:none">
       <p>${t("edit_vehicle_info_note", { code: "<code>VehicleIdentified</code>" })}</p>
       <div class="row">
+        <input id="edit-nickname" placeholder="${esc(t("nickname_placeholder"))}" value="${esc(v.nickname || "")}">
         <input id="edit-vin" placeholder="${esc(t("vin_placeholder"))}" value="${esc(v.vin || "")}">
         <input id="edit-make" placeholder="${esc(t("make_placeholder"))}" value="${esc(v.make || "")}">
         <input id="edit-model" placeholder="${esc(t("model_placeholder"))}" value="${esc(v.model || "")}">
@@ -1305,10 +1310,10 @@ async function renderPassport(app, id) {
   document.getElementById("favorite-btn").onclick = () => {
     const btn = document.getElementById("favorite-btn");
     if (isFavorite(id)) { removeFavorite(id); btn.textContent = t("favorite_add_btn"); }
-    else { addFavorite(id, desc || t("passport_default_heading")); btn.textContent = t("favorite_remove_btn"); }
+    else { addFavorite(id, heading); btn.textContent = t("favorite_remove_btn"); }
   };
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
-  enterSubmits(["edit-vin", "edit-make", "edit-model", "edit-year"], "edit-btn");
+  enterSubmits(["edit-nickname", "edit-vin", "edit-make", "edit-model", "edit-year"], "edit-btn");
   const vehicleEditToggleBtn = document.getElementById("vehicle-edit-toggle-btn");
   const vehicleEditBox = document.getElementById("vehicle-edit-box");
   vehicleEditToggleBtn.onclick = () => {
@@ -1534,6 +1539,7 @@ async function submitVehicleInfo(id) {
   const producer = requireLogAuthor(status);
   if (!producer) return;
   const facts = {
+    nickname: document.getElementById("edit-nickname").value.trim(),
     vin: document.getElementById("edit-vin").value.trim(),
     make: document.getElementById("edit-make").value.trim(),
     model: document.getElementById("edit-model").value.trim(),
