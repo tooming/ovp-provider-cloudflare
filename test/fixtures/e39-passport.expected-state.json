@@ -49,6 +49,7 @@
       "at": "1998-03-01T00:00:00+02:00",
       "type": "PassportOpened",
       "producer": "owner-cli",
+      "operator": "did:key:zOwnerA",
       "producerDomain": null,
       "producerVerified": false
     },
@@ -56,6 +57,7 @@
       "at": "2026-06-01T09:15:00+03:00",
       "type": "OdometerReading",
       "producer": "owner-cli",
+      "operator": "did:key:zOwnerA",
       "producerDomain": null,
       "producerVerified": false
     },
@@ -63,6 +65,7 @@
       "at": "2026-06-15T14:02:00+03:00",
       "type": "DiagnosticTroubleCodeRead",
       "producer": "kline-diag",
+      "operator": "did:key:zOwnerA",
       "producerDomain": null,
       "producerVerified": false
     },
@@ -70,6 +73,7 @@
       "at": "2026-06-20T11:00:00+03:00",
       "type": "ServicePerformed",
       "producer": "owner-cli",
+      "operator": "did:key:zOwnerA",
       "producerDomain": null,
       "producerVerified": false
     },
@@ -77,6 +81,7 @@
       "at": "2026-06-20T11:20:00+03:00",
       "type": "DiagnosticTroubleCodeCleared",
       "producer": "kline-diag",
+      "operator": "did:key:zOwnerA",
       "producerDomain": null,
       "producerVerified": false
     },
@@ -84,6 +89,7 @@
       "at": "2026-06-22T10:00:00Z",
       "type": "AiInsightGenerated",
       "producer": "ovp-insights",
+      "operator": null,
       "producerDomain": null,
       "producerVerified": false
     },
@@ -91,6 +97,7 @@
       "at": "2026-07-01T12:00:00+03:00",
       "type": "AccessGranted",
       "producer": "owner-cli",
+      "operator": "did:key:zOwnerA",
       "producerDomain": null,
       "producerVerified": false
     }

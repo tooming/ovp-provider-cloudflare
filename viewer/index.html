@@ -1207,10 +1207,12 @@ async function renderPassport(app, id) {
 
   const outboxTimeline = outbox.map(item => ({
     at: item.ev.occurredAt, type: item.ev.type, producer: item.ev.producer?.name,
+    operator: item.ev.producer?.operator || null,
     pending: !item.error, error: item.error, evId: item.ev.id, raw: item.ev,
   }));
   const recentTimeline = recentSynced.map(item => ({
     at: item.ev.occurredAt, type: item.ev.type, producer: item.ev.producer?.name,
+    operator: item.ev.producer?.operator || null,
     producerDomain: item.ev.producer?.domain || null, producerVerified: !!item.ev.producer?.verified,
     evId: item.ev.id, raw: item.ev,
   }));
@@ -1231,8 +1233,11 @@ async function renderPassport(app, id) {
     // Skip the plain "— producer" text once the badge already shows the
     // verified domain -- older events (before producer.name stopped
     // being set to the domain for workshop attribution) would otherwise
-    // print the same domain twice on one line.
-    const producerText = (row.producer && !row.producerVerified) ? " — " + esc(row.producer) : "";
+    // print the same domain twice on one line. Prefer showing who was
+    // actually signed in (producer.operator, e.g. an email) over the bare
+    // tool name (producer.name, e.g. "opendiag") when both are present.
+    const attribution = row.operator || row.producer;
+    const producerText = (attribution && !row.producerVerified) ? " — " + esc(attribution) : "";
     // Outbox/recently-synced rows carry the raw event already (row.raw),
     // so they can show a summary immediately; older rows only have the
     // server's reduced summary (no `data`) and get patched in once
