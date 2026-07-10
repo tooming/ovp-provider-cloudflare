@@ -100,8 +100,24 @@
       "operator": "did:key:zOwnerA",
       "producerDomain": null,
       "producerVerified": false
+    },
+    {
+      "at": "2026-07-05T10:00:00+03:00",
+      "type": "DiagnosticTroubleCodeRead",
+      "producer": "kline-diag",
+      "operator": "did:key:zOwnerA",
+      "producerDomain": null,
+      "producerVerified": false
+    },
+    {
+      "at": "2026-07-08T10:00:00+03:00",
+      "type": "DiagnosticTroubleCodeRead",
+      "producer": "kline-diag",
+      "operator": "did:key:zOwnerA",
+      "producerDomain": null,
+      "producerVerified": false
     }
   ],
-  "event_count": 8,
+  "event_count": 10,
   "corrections_applied": 1
 }
