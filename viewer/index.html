@@ -242,6 +242,8 @@ const I18N = {
     verified_badge_title: "Domain-verified producer",
     details_btn: "Details",
     hide_details_btn: "Hide details",
+    no_codes_found: "no codes found",
+    all_codes_cleared: "all codes cleared",
     loading_ellipsis: "Loading…",
     discard_confirm: "Discard this event? It was never sent to the provider, and this can't be undone.",
     discard_btn: "Discard",
@@ -395,6 +397,8 @@ const I18N = {
     verified_badge_title: "Domeeni kaudu kinnitatud tootja",
     details_btn: "Detailid",
     hide_details_btn: "Peida detailid",
+    no_codes_found: "vigu ei leitud",
+    all_codes_cleared: "kõik veakoodid kustutatud",
     loading_ellipsis: "Laadimine…",
     discard_confirm: "Kas loobuda sellest sündmusest? Seda ei saadetud kunagi teenusepakkujale ja seda ei saa tagasi võtta.",
     discard_btn: "Loobu",
@@ -867,6 +871,60 @@ async function loadExportEvents(id) {
   return exportCache[id];
 }
 
+// A one-line inline summary for event types where the type name alone
+// ("DynoRun", "DiagnosticTroubleCodeRead") tells you nothing -- the
+// actual numbers/codes are what someone scanning the timeline wants
+// without a "Details" click per row. Falls back to "" (no summary shown)
+// for any type not specifically handled here.
+function summarizeEvent(type, data) {
+  if (!data) return "";
+  if (type === "DynoRun") {
+    const parts = [];
+    if (data.power?.value != null) parts.push(`${data.power.value} ${data.power.unit || "kW"}`);
+    if (data.torque?.value != null) parts.push(`${data.torque.value} ${data.torque.unit || "Nm"}`);
+    return parts.join(" / ");
+  }
+  if (type === "DiagnosticTroubleCodeRead") {
+    const codes = (data.codes || []).map(c => c.code).filter(Boolean);
+    const mod = data.module?.name ? esc(data.module.name) + ": " : "";
+    return mod + (codes.length ? esc(codes.join(", ")) : t("no_codes_found"));
+  }
+  if (type === "DiagnosticTroubleCodeCleared") {
+    const cleared = data.codesCleared || [];
+    const mod = data.module?.name ? esc(data.module.name) + ": " : "";
+    return mod + (cleared.includes("*") ? t("all_codes_cleared") : esc(cleared.join(", ")));
+  }
+  return "";
+}
+
+// Timeline rows render immediately from the server's reduced summary
+// (state.timeline), which doesn't carry each event's `data` payload (see
+// ovpf_core.reduce()) -- only recently-synced/outbox rows have `raw`
+// attached client-side. Rather than block the whole page's first paint on
+// a full /export fetch just to fill in summaries, render plain rows first
+// and patch summaries in once the (already-needed-for-Details-clicks)
+// export data arrives -- reuses the same exportCache promise, so this
+// costs nothing extra if "Details" is later clicked.
+async function enrichTimelineSummaries(id, rows) {
+  let events;
+  try {
+    events = await loadExportEvents(id);
+  } catch (e) {
+    return; // best-effort -- plain rows (no summary) are still fully usable
+  }
+  rows.forEach((row, idx) => {
+    const el = document.getElementById(`summary-${idx}`);
+    if (!el) return; // page navigated away / re-rendered before this resolved
+    let data = row.raw?.data;
+    if (!data) {
+      const matches = events.filter(e => e.occurredAt === row.at && e.type === row.type);
+      data = matches.length === 1 ? matches[0].data : null;
+    }
+    const summary = summarizeEvent(row.type, data);
+    if (summary) el.innerHTML = ` — ${summary}`;
+  });
+}
+
 async function showEventDetail(id, idx, detailEl, btn) {
   if (detailEl.dataset.open === "1") {
     detailEl.dataset.open = "0";
@@ -1175,8 +1233,13 @@ async function renderPassport(app, id) {
     // being set to the domain for workshop attribution) would otherwise
     // print the same domain twice on one line.
     const producerText = (row.producer && !row.producerVerified) ? " — " + esc(row.producer) : "";
+    // Outbox/recently-synced rows carry the raw event already (row.raw),
+    // so they can show a summary immediately; older rows only have the
+    // server's reduced summary (no `data`) and get patched in once
+    // enrichTimelineSummaries's export fetch resolves -- see there.
+    const immediateSummary = row.raw?.data ? summarizeEvent(row.type, row.raw.data) : "";
     return `<div class="timeline-item"><time datetime="${esc(row.at)}" title="${esc(row.at)} (UTC/as recorded)">${fmtTime(row.at)}</time><br>
-     <strong>${esc(row.type)}</strong>${producerText}${badge}
+     <strong>${esc(row.type)}</strong><span class="event-summary" id="summary-${idx}">${immediateSummary ? " — " + immediateSummary : ""}</span>${producerText}${badge}
      <button class="no-print details-btn" data-idx="${idx}">${t("details_btn")}</button>
      <div class="event-detail-panel" id="detail-${idx}" style="display:none"></div></div>`;
   }).join("") || `<p>${t("no_events_yet")}</p>`;
@@ -1376,6 +1439,9 @@ async function renderPassport(app, id) {
       showEventDetail(id, idx, document.getElementById(`detail-${idx}`), btn);
     };
   });
+  // Fire-and-forget: fills in the summary-${idx} placeholders once the
+  // export fetch resolves. Not awaited -- must not delay this render.
+  enrichTimelineSummaries(id, combined);
 
   // If this browser is signed in as a workshop (owner or a specific
   // mechanic), every event logged from here is automatically attributed
