@@ -707,18 +707,23 @@ function registeredKey(id) { return `ovp_registered_${id}`; }
 function markRegistered(id) { localStorage.setItem(registeredKey(id), "1"); }
 function isRegistered(id) { return localStorage.getItem(registeredKey(id)) === "1"; }
 
+function passportStateKey(id) { return `ovp_state_${id}`; }
+function workshopStateKey(domain) { return `ovp_ws_state_${domain}`; }
+
 // Favorites are purely a local bookmark list -- there's no server-side
 // concept of "my passports" or "my workshops" (there's no account to hang
 // one off of, see the whole local-first/OTP-only design elsewhere in this
 // file), just a quick way back to specific passports *or* workshops from
 // the home page without re-scanning a sticker or re-pasting an id/link/
-// domain every time. label is a best-effort snapshot of the
-// description/name at the moment it was favorited (not kept live-updated
-// -- it's just there so the home page list isn't a wall of bare
-// uuids/domains). kind distinguishes the two ("passport" is the default,
-// for entries saved before workshops could be favorited too); passport
-// ids and workshop domains never collide, but kind is still checked so
-// removing one doesn't accidentally remove the other.
+// domain every time. Only id/kind are stored -- the display label is
+// looked up live (via passportFavoriteLabel/workshopFavoriteLabel below)
+// from whatever this browser already has cached for that id, so renaming
+// a passport or workshop updates its favorites entry too instead of
+// leaving a stale label frozen at add-time. kind distinguishes the two
+// ("passport" is the default, for entries saved before workshops could be
+// favorited too); passport ids and workshop domains never collide, but
+// kind is still checked so removing one doesn't accidentally remove the
+// other.
 const FAVORITES_KEY = "ovp_favorites";
 function loadFavorites() {
   try { return JSON.parse(localStorage.getItem(FAVORITES_KEY)) || []; } catch { return []; }
@@ -730,13 +735,29 @@ function saveFavorites(items) {
 function isFavorite(id, kind = "passport") {
   return loadFavorites().some(f => f.id === id && (f.kind || "passport") === kind);
 }
-function addFavorite(id, label, kind = "passport") {
+function addFavorite(id, kind = "passport") {
   const items = loadFavorites().filter(f => !(f.id === id && (f.kind || "passport") === kind));
-  items.unshift({ id, label: label || id, kind, addedAt: Date.now() });
+  items.unshift({ id, kind, addedAt: Date.now() });
   saveFavorites(items);
 }
 function removeFavorite(id, kind = "passport") {
   saveFavorites(loadFavorites().filter(f => !(f.id === id && (f.kind || "passport") === kind)));
+}
+// Falls back to the bare id/domain when this browser has never cached
+// that passport/workshop's state (e.g. favorited via a link someone else
+// sent, before its own page was ever loaded here).
+function passportFavoriteLabel(id) {
+  let state;
+  try { state = JSON.parse(localStorage.getItem(passportStateKey(id))); } catch { state = null; }
+  const v = (state && state.vehicle) || {};
+  if (v.nickname) return v.nickname;
+  const desc = [v.modelYear, v.make, v.model].filter(Boolean).join(" ");
+  return desc || id;
+}
+function workshopFavoriteLabel(domain) {
+  let state;
+  try { state = JSON.parse(localStorage.getItem(workshopStateKey(domain))); } catch { state = null; }
+  return (state && state.name) || domain;
 }
 
 // A just-synced event can still be briefly invisible in a fresh GET --
@@ -1067,7 +1088,7 @@ function renderHome(app) {
     ${favorites.length ? `
     <h2>${t("favorites_heading")}</h2>
     <ul>${favorites.map(f =>
-      `<li><a href="/p/${esc(f.id)}">${esc(f.label)}</a> ` +
+      `<li><a href="/p/${esc(f.id)}">${esc(passportFavoriteLabel(f.id))}</a> ` +
       `<button class="no-print favorite-remove-btn" data-id="${esc(f.id)}" data-kind="passport">${t("favorites_remove_btn")}</button></li>`
     ).join("")}</ul>` : ""}
     <p>${t("home_intro", { code: "<code>/p/&lt;uuid&gt;</code>" })}</p>
@@ -1116,7 +1137,7 @@ function renderHome(app) {
 
 async function renderPassport(app, id) {
   currentPassportId = id;
-  const cacheKey = `ovp_state_${id}`;
+  const cacheKey = passportStateKey(id);
   let state, offlineLoad = false, neverSynced = false;
   try {
     const r = await api(`/v1/passports/${id}`);
@@ -1363,7 +1384,7 @@ async function renderPassport(app, id) {
   document.getElementById("favorite-btn").onclick = () => {
     const btn = document.getElementById("favorite-btn");
     if (isFavorite(id)) { removeFavorite(id); btn.textContent = t("favorite_add_btn"); }
-    else { addFavorite(id, heading); btn.textContent = t("favorite_remove_btn"); }
+    else { addFavorite(id); btn.textContent = t("favorite_remove_btn"); }
   };
   document.getElementById("edit-btn").onclick = () => submitVehicleInfo(id);
   enterSubmits(["edit-nickname", "edit-vin", "edit-make", "edit-model", "edit-year"], "edit-btn");
@@ -1650,7 +1671,7 @@ function renderWorkshopForm(app) {
     ${favorites.length ? `
     <h2>${t("favorites_heading")}</h2>
     <ul>${favorites.map(f =>
-      `<li><a href="/workshop/${esc(f.id)}">${esc(f.label)}</a> ` +
+      `<li><a href="/workshop/${esc(f.id)}">${esc(workshopFavoriteLabel(f.id))}</a> ` +
       `<button class="no-print favorite-remove-btn" data-id="${esc(f.id)}" data-kind="workshop">${t("favorites_remove_btn")}</button></li>`
     ).join("")}</ul>` : ""}
     <p>${t("register_workshop_intro", { link: '<a href="https://github.com/tooming/openvehiclepassport/blob/main/docs/TRUST.md">docs/TRUST.md</a>' })}</p>
@@ -1710,6 +1731,10 @@ async function renderWorkshopStatus(app, domain, preloaded) {
   }
   if (!r.ok) { app.innerHTML = `<p class="error">${t("ws_http_error", { status: r.status })}</p>`; return; }
   const w = r.body;
+  // Keeps workshopFavoriteLabel's lookup live -- a rename lands here via
+  // `preloaded` right after the mutation, same as a fresh GET, so the
+  // favorites list on /workshop picks up the new name next render.
+  localStorage.setItem(workshopStateKey(w.domain), JSON.stringify(w));
 
   // A cached role (from a previous /whoami) isn't trusted for the actual
   // gating below -- it's reconfirmed live every time this page loads,
@@ -1830,7 +1855,7 @@ Value: ${esc(w.dnsRecord.value)}</code>
   document.getElementById("ws-favorite-btn").onclick = () => {
     const btn = document.getElementById("ws-favorite-btn");
     if (isFavorite(w.domain, "workshop")) { removeFavorite(w.domain, "workshop"); btn.textContent = t("favorite_add_btn"); }
-    else { addFavorite(w.domain, w.name, "workshop"); btn.textContent = t("favorite_remove_btn"); }
+    else { addFavorite(w.domain, "workshop"); btn.textContent = t("favorite_remove_btn"); }
   };
 
   const renameToggleBtn = document.getElementById("ws-rename-toggle-btn");
