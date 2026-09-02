@@ -30,18 +30,52 @@ including that exact edge case.
 Same contract as `ovp-provider-aws` -- same routes, same
 recordedAt-is-immutable rule:
 
-| Method | Path                          | Auth                        |
-|--------|-------------------------------|------------------------------|
-| POST   | `/v1/passports`                | none |
-| GET    | `/v1/passports/{id}`           | none -- the id is the read capability |
-| POST   | `/v1/passports/{id}/events`    | none -- see below |
-| GET    | `/v1/passports/{id}/export`    | none |
+| Method | Path                                    | Auth                                    |
+|--------|-----------------------------------------|------------------------------------------|
+| POST   | `/v1/passports`                          | signed-in identity -- becomes the owner |
+| GET    | `/v1/passports/{id}`                     | none -- the id is the read capability   |
+| POST   | `/v1/passports/{id}/events`              | signed-in identity -- see below         |
+| GET    | `/v1/passports/{id}/export`              | none                                     |
+| GET    | `/v1/passports/{id}/pending`             | owner only                               |
+| POST   | `/v1/passports/{id}/pending/{pendingId}` | owner only -- `{decision}`               |
+| POST   | `/v1/passports/{id}/transfer`            | owner only -- `{email}`, initiates        |
+| GET    | `/v1/passports/{id}/transfer`            | current or proposed owner                |
+| POST   | `/v1/passports/{id}/transfer/accept`     | proposed new owner only                  |
+| POST   | `/v1/passports/{id}/transfer/cancel`     | owner only                               |
 
-**POC MODE: there is no write access control at all right now**,
-matching `ovp-provider-aws`. A write-capability-token model existed and
-was removed entirely (not just left unenforced) for easier POCing --
-anyone who knows a passport id can append to it. Not the intended
-posture; see git history if it needs to come back.
+## Ownership + consent-gated appends
+
+Creating a passport (`POST /v1/passports`) records the signed-in identity
+(the same OTP-backed owner/mechanic sessions already used elsewhere in
+`src/worker.js`) as its **owner** -- not as a side field, but as an
+`AccessGranted{role:"owner"}` event in the passport's own log, the same
+event type `ovpf-core.js`'s `reduce()` already understood (see
+`docs`/the shared `conformance/fixtures` state). Reading a passport
+(knowing its id) is unaffected -- this is entirely about *write*.
+
+Appending an event (`POST /v1/passports/{id}/events`) as the owner lands
+immediately, same as before. Appending as anyone else does not: it
+becomes a **pending contribution** instead, and the owner decides via
+`GET .../pending` (list) and `POST .../pending/{pendingId}`
+(`{"decision": "deny" | "allow_once" | "always_allow"}`). `always_allow`
+also stores a standing per-submitter grant so that identity's future
+appends land directly without a repeat prompt; `deny` leaves no trace
+(the pending item is simply discarded, never logged). Un-actioned pending
+contributions expire after 7 days. A passport with no recorded owner
+(anything registered before this feature existed) keeps this provider's
+original open-append behaviour -- grandfathered, not locked out.
+
+**Ownership transfer** is itself structured as consent on both sides:
+the owner starts it (`POST .../transfer {email}`), the proposed new owner
+must explicitly accept (`POST .../transfer/accept`) before anything
+changes -- the current owner keeps control (and can `POST
+.../transfer/cancel`) until then. Acceptance appends an
+`OwnershipTransferred` event (auditable in the export/timeline like any
+other event) and resets any "always allow" submitter grants -- a new
+owner re-vets who gets to auto-append rather than inheriting the
+previous owner's trust decisions. An unaccepted transfer offer also
+expires after 7 days.
+
 
 ## Rate limiting & cost protection
 
@@ -80,6 +114,13 @@ One KV namespace, `PASSPORTS`:
   event. `list({prefix})` returns keys in sorted order, same role
   DynamoDB's `Query`-by-`sk` plays for the AWS provider -- no schema,
   no SQL, the KV key ordering does the work.
+- `PASSPORT#<id>#PENDING#<pendingId>` -- a non-owner's submitted event
+  awaiting the owner's allow/deny decision (see Ownership above).
+  `expirationTtl`'d (7 days) so an un-actioned prompt cleans itself up.
+- `PASSPORT#<id>#GRANT#<email>` -- a standing "always allow" decision for
+  one submitting identity. Deleted wholesale on ownership transfer.
+- `PASSPORT#<id>#TRANSFER` -- a pending ownership transfer offer (target
+  email + who initiated it). `expirationTtl`'d (7 days).
 
 **Known, disclosed limitation: Cloudflare KV is eventually consistent.**
 Observed in production: an event `PUT` right before a `GET` on the same
