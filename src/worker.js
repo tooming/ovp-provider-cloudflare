@@ -40,6 +40,46 @@ function eventKey(id, ev) {
   return `${eventKeyPrefix(id)}${ev.recordedAt}#${ev.id}`;
 }
 
+// --- Consent-gated appends + ownership transfer -----------------------------
+// A passport's owner is not a side field -- it's derived from the log
+// itself (an AccessGranted{role:"owner"}/OwnershipTransferred event, see
+// createPassport/acceptTransfer and ovpf.reduce()). Everything below is
+// scaffolding *around* that: a non-owner's submitted event doesn't land in
+// the log immediately, it waits here as a pending contribution until the
+// owner allows or denies it (or it expires unactioned), and an
+// "always allow" decision is remembered per submitting identity so the
+// same contributor isn't re-prompted forever.
+const PENDING_TTL_SECONDS = 7 * 24 * 3600; // un-actioned prompts expire in a week
+const TRANSFER_TTL_SECONDS = 7 * 24 * 3600; // an unaccepted transfer offer expires in a week
+
+function pendingKeyPrefix(id) {
+  return `PASSPORT#${id}#PENDING#`;
+}
+
+function pendingKey(id, pendingId) {
+  return `${pendingKeyPrefix(id)}${pendingId}`;
+}
+
+function grantKeyPrefix(id) {
+  return `PASSPORT#${id}#GRANT#`;
+}
+
+function grantKey(id, email) {
+  return `${grantKeyPrefix(id)}${email}`;
+}
+
+function transferKey(id) {
+  return `PASSPORT#${id}#TRANSFER`;
+}
+
+// Ownerless (no AccessGranted event yet -- e.g. a passport registered
+// before this feature existed) grandfathers as open appends, same as this
+// provider's original POC-mode behaviour, rather than locking existing
+// passports no one can ever satisfy an owner check for.
+function ownerOf(events) {
+  return events.length ? ovpf.reduce(events).owner : null;
+}
+
 // Reads KV directly via list() -- only used as PassportSequencer's one-time
 // bootstrap fallback (see the DO's _events()) when its own storage hasn't
 // cached this passport's events yet. Never call this directly elsewhere:
@@ -83,10 +123,11 @@ async function createPassport(request, env) {
   // viewer's own crypto.randomUUID(), before this provider ever hears
   // about it), so this registers that existing id with this provider
   // rather than handing out a new one. Requires *some* signed-in
-  // identity (see authenticateWrite) -- registering is the moment a
-  // locally-anonymous passport actually becomes visible to this
-  // provider, so it's the moment a login is needed, not before.
-  if (!(await authenticateWrite(env, request))) {
+  // identity (see authenticateWrite/authenticatedIdentity) -- registering
+  // is the moment a locally-anonymous passport actually becomes visible
+  // to this provider, so it's the moment a login is needed, not before.
+  const identity = await authenticatedIdentity(env, request);
+  if (!identity) {
     return json({ error: "sign in required to sync a passport to this provider" }, 401);
   }
   let body = {};
@@ -106,7 +147,20 @@ async function createPassport(request, env) {
     createdAt: new Date().toISOString(),
   }));
 
-  return json({ id, readUrl: `/v1/passports/${id}` }, 201);
+  // Ownership lives in the passport's own event log, not a side-channel
+  // field -- an AccessGranted{role:"owner"} event, the same type
+  // ovpf.reduce() already understands (see ovpf-core.js, shared with the
+  // OwnershipTransferred handling appendEvent's consent gate relies on
+  // below). This makes "who owns this passport" derivable the exact same
+  // way as any other passport state, auditable in the export/timeline
+  // like everything else, and needs no separate storage shape.
+  const ownerGrant = ovpf.envelope(`urn:ovpf:${id}`, "AccessGranted",
+    { identity: identity.email, role: "owner" },
+    { type: "System", name: "ovp-provider-cloudflare", operator: identity.email });
+  const sealed = await sealEvent(env, "passport", id, ownerGrant);
+  await env.PASSPORTS.put(eventKey(id, sealed), JSON.stringify(sealed));
+
+  return json({ id, owner: identity.email, readUrl: `/v1/passports/${id}` }, 201);
 }
 
 // --- Workshops are event-sourced too, same discipline as vehicle passports:
@@ -385,27 +439,33 @@ async function checkOwnerSession(state, env, request) {
   return !!match && match.role === "workshop";
 }
 
-async function authenticateWrite(env, request) {
+async function authenticatedIdentity(env, request) {
   // Base gate for creating/appending to a passport: is *some* identity
-  // signed in at all? A personal (role="user") session -- just a plain
-  // email OTP, not tied to any workshop -- always qualifies, since the
-  // bar for this gate is "controls a real mailbox", not "is affiliated
-  // with anything". A workshop-owner or mechanic session also qualifies
-  // (re-validated against live workshop state, same as
-  // matchProducerSession, so a removed mechanic can't keep writing).
-  // This is deliberately separate from the *producer.verified* stamping
-  // logic in appendEvent, which additionally requires producer.domain
-  // to match the session's own domain -- this gate only asks "is anyone
-  // logged in", not "as whom".
+  // signed in at all, and if so, as which email? A personal (role="user")
+  // session -- just a plain email OTP, not tied to any workshop -- always
+  // qualifies, since the bar for this gate is "controls a real mailbox",
+  // not "is affiliated with anything". A workshop-owner or mechanic
+  // session also qualifies (re-validated against live workshop state,
+  // same as matchProducerSession, so a removed mechanic can't keep
+  // writing). This is deliberately separate from the *producer.verified*
+  // stamping logic in appendEvent, which additionally requires
+  // producer.domain to match the session's own domain -- this gate only
+  // asks "is anyone logged in, and as whom", not "as this specific
+  // workshop". The returned email is what passport ownership/consent
+  // (createPassport/appendEvent) compares against.
   const token = bearerToken(request);
   const payload = await verifySessionToken(env, token);
-  if (!payload) return false;
-  if (payload.role === "user") return true;
+  if (!payload) return null;
+  if (payload.role === "user") return { email: payload.email };
   if (payload.domain) {
     const workshop = await getWorkshop(env, payload.domain);
-    if (workshop && (await matchProducerSession(workshop, env, token))) return true;
+    if (workshop && (await matchProducerSession(workshop, env, token))) return { email: payload.email };
   }
-  return false;
+  return null;
+}
+
+async function authenticateWrite(env, request) {
+  return !!(await authenticatedIdentity(env, request));
 }
 
 async function dnsTxtLookup(name) {
@@ -827,8 +887,24 @@ async function removeMechanic(request, env, domain, mechanicId) {
   return json(workshopView(reduceWorkshop([...events, sealed]), true));
 }
 
+// Seals and lands an already-stamped event straight into the passport's
+// log -- the "this is allowed, go" path shared by a direct owner append,
+// an owner's approve-once/always-allow decision on a pending contribution,
+// and the system-generated ownership events (createPassport/acceptTransfer).
+async function landEvent(env, id, ev) {
+  // recordedAt is producer-set, immutable -- same contract as app.py.
+  // Sealed (prevHash/hash computed) via the PassportSequencer Durable
+  // Object, not a local KV read -- see its module comment for why.
+  const sealed = await sealEvent(env, "passport", id, ev);
+  const key = eventKey(id, sealed);
+  const existingItem = await env.PASSPORTS.get(key);
+  if (existingItem) return { error: "event already exists (duplicate id/recordedAt)" };
+  await env.PASSPORTS.put(key, JSON.stringify(sealed));
+  return { event: sealed };
+}
+
 async function appendEvent(request, env, id) {
-  // Requires *some* signed-in identity (see authenticateWrite) -- a
+  // Requires *some* signed-in identity (see authenticatedIdentity) -- a
   // plain personal email OTP is enough, no workshop affiliation needed.
   // This is deliberately a separate, weaker requirement than the
   // producer.verified stamping below: being logged in as *someone* lets
@@ -836,7 +912,8 @@ async function appendEvent(request, env, id) {
   // additionally earns the verified badge.
   const meta = await getMeta(env, id);
   if (!meta) return json({ error: "no such passport" }, 404);
-  if (!(await authenticateWrite(env, request))) {
+  const identity = await authenticatedIdentity(env, request);
+  if (!identity) {
     return json({ error: "sign in required to sync events to this provider" }, 401);
   }
 
@@ -883,17 +960,212 @@ async function appendEvent(request, env, id) {
   }
   ev.producer = producer;
 
-  // recordedAt is producer-set, immutable -- same contract as app.py.
-  // Sealed (prevHash/hash computed) via the PassportSequencer Durable
-  // Object, not a local KV read -- see its module comment for why.
-  ev = await sealEvent(env, "passport", id, ev);
+  // Consent gate: an owned passport only accepts a *direct* append from
+  // its own owner (see createPassport/acceptTransfer for how ownership is
+  // established/moved). Anyone else's submission doesn't land in the log
+  // yet -- it waits as a pending contribution for the owner to allow or
+  // deny (see listPending/decidePending) -- unless this exact submitting
+  // identity already has a standing "always allow" grant from an earlier
+  // decision. An ownerless passport (none recorded yet -- see ownerOf)
+  // keeps this provider's original open-append behaviour.
+  const events = await loadEvents(env, id);
+  const owner = ownerOf(events);
+  if (owner && owner !== identity.email) {
+    const granted = await env.PASSPORTS.get(grantKey(id, identity.email));
+    if (!granted) {
+      const pendingId = crypto.randomUUID();
+      const pending = {
+        id: pendingId, submitter: identity.email, event: ev,
+        createdAt: new Date().toISOString(),
+      };
+      await env.PASSPORTS.put(pendingKey(id, pendingId), JSON.stringify(pending),
+        { expirationTtl: PENDING_TTL_SECONDS });
+      return json({
+        pending: true, pendingId,
+        note: "awaiting the passport owner's approval -- see GET .../pending",
+      }, 202);
+    }
+  }
 
-  const key = eventKey(id, ev);
-  const existingItem = await env.PASSPORTS.get(key);
-  if (existingItem) return json({ error: "event already exists (duplicate id/recordedAt)" }, 409);
-  await env.PASSPORTS.put(key, JSON.stringify(ev));
+  const result = await landEvent(env, id, ev);
+  if (result.error) return json({ error: result.error }, 409);
+  return json(result.event, 201);
+}
 
-  return json(ev, 201);
+async function listPending(request, env, id) {
+  const meta = await getMeta(env, id);
+  if (!meta) return json({ error: "no such passport" }, 404);
+  const identity = await authenticatedIdentity(env, request);
+  if (!identity) return json({ error: "sign in required" }, 401);
+
+  const owner = ownerOf(await loadEvents(env, id));
+  if (!owner || owner !== identity.email) {
+    return json({ error: "only the passport owner can view pending contributions" }, 403);
+  }
+
+  const items = [];
+  let cursor;
+  do {
+    const page = await env.PASSPORTS.list({ prefix: pendingKeyPrefix(id), cursor });
+    for (const k of page.keys) {
+      const v = await env.PASSPORTS.get(k.name);
+      if (v) items.push(JSON.parse(v));
+    }
+    cursor = page.cursor;
+  } while (cursor);
+  items.sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+  return json({ pending: items });
+}
+
+async function decidePending(request, env, id, pendingId) {
+  const meta = await getMeta(env, id);
+  if (!meta) return json({ error: "no such passport" }, 404);
+  const identity = await authenticatedIdentity(env, request);
+  if (!identity) return json({ error: "sign in required" }, 401);
+
+  const owner = ownerOf(await loadEvents(env, id));
+  if (!owner || owner !== identity.email) {
+    return json({ error: "only the passport owner can decide pending contributions" }, 403);
+  }
+
+  const key = pendingKey(id, pendingId);
+  const raw = await env.PASSPORTS.get(key);
+  if (!raw) return json({ error: "no such pending contribution (it may have expired)" }, 404);
+  const pending = JSON.parse(raw);
+
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+  const decision = body.decision;
+  if (!["deny", "allow_once", "always_allow"].includes(decision)) {
+    return json({ error: 'decision must be one of "deny", "allow_once", "always_allow"' }, 400);
+  }
+
+  // Actioned (in any way) exactly once -- removed here up front so a
+  // double-submit (e.g. a double click) can't land the same contribution
+  // twice. A denial leaves no further trace: it's simply removed, never
+  // logged to the passport itself.
+  await env.PASSPORTS.delete(key);
+
+  if (decision === "deny") {
+    return json({ decision, pendingId });
+  }
+
+  if (decision === "always_allow") {
+    await env.PASSPORTS.put(grantKey(id, pending.submitter),
+      JSON.stringify({ grantedAt: new Date().toISOString() }));
+  }
+
+  const result = await landEvent(env, id, pending.event);
+  if (result.error) return json({ error: result.error }, 409);
+  return json({ decision, pendingId, event: result.event });
+}
+
+async function initiateTransfer(request, env, id) {
+  const meta = await getMeta(env, id);
+  if (!meta) return json({ error: "no such passport" }, 404);
+  const identity = await authenticatedIdentity(env, request);
+  if (!identity) return json({ error: "sign in required" }, 401);
+
+  const owner = ownerOf(await loadEvents(env, id));
+  if (!owner || owner !== identity.email) {
+    return json({ error: "only the passport owner can transfer ownership" }, 403);
+  }
+
+  let body = {};
+  try {
+    const text = await request.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return json({ error: "body must be JSON" }, 400);
+  }
+  const toEmail = (body.email || "").trim().toLowerCase();
+  if (!toEmail || !toEmail.includes("@")) return json({ error: "a valid target email is required" }, 400);
+  if (toEmail === owner) return json({ error: "passport is already owned by this identity" }, 400);
+
+  // Pending, not immediate -- the proposed new owner must explicitly
+  // accept (see acceptTransfer) before ownership actually moves. The
+  // current owner keeps full control (including cancelling, see
+  // cancelTransfer) until then. Structured as its own step specifically
+  // so a future payment (transfer-on-sale) can be inserted between
+  // "new owner accepts" and "ownership moves" without reworking this flow.
+  const transfer = { toEmail, fromEmail: owner, createdAt: new Date().toISOString() };
+  await env.PASSPORTS.put(transferKey(id), JSON.stringify(transfer), { expirationTtl: TRANSFER_TTL_SECONDS });
+  return json({ pendingTransfer: transfer });
+}
+
+async function cancelTransfer(request, env, id) {
+  const meta = await getMeta(env, id);
+  if (!meta) return json({ error: "no such passport" }, 404);
+  const identity = await authenticatedIdentity(env, request);
+  if (!identity) return json({ error: "sign in required" }, 401);
+
+  const owner = ownerOf(await loadEvents(env, id));
+  if (!owner || owner !== identity.email) {
+    return json({ error: "only the passport owner can cancel a pending transfer" }, 403);
+  }
+  await env.PASSPORTS.delete(transferKey(id));
+  return json({ cancelled: true });
+}
+
+async function getTransfer(request, env, id) {
+  const meta = await getMeta(env, id);
+  if (!meta) return json({ error: "no such passport" }, 404);
+  const identity = await authenticatedIdentity(env, request);
+  if (!identity) return json({ error: "sign in required" }, 401);
+
+  const raw = await env.PASSPORTS.get(transferKey(id));
+  if (!raw) return json({ pendingTransfer: null });
+  const transfer = JSON.parse(raw);
+  // Visible only to the two parties involved -- it names a target email,
+  // which is PII the same way a workshop's mechanic emails are (see
+  // reduceWorkshop/workshopView).
+  if (identity.email !== transfer.fromEmail && identity.email !== transfer.toEmail) {
+    return json({ pendingTransfer: null });
+  }
+  return json({ pendingTransfer: transfer });
+}
+
+async function acceptTransfer(request, env, id) {
+  const meta = await getMeta(env, id);
+  if (!meta) return json({ error: "no such passport" }, 404);
+  const identity = await authenticatedIdentity(env, request);
+  if (!identity) return json({ error: "sign in required" }, 401);
+
+  const raw = await env.PASSPORTS.get(transferKey(id));
+  if (!raw) return json({ error: "no pending transfer for this passport" }, 404);
+  const transfer = JSON.parse(raw);
+  if (identity.email !== transfer.toEmail) {
+    return json({ error: "only the proposed new owner can accept this transfer" }, 403);
+  }
+  await env.PASSPORTS.delete(transferKey(id));
+
+  // "Always allow" submitter grants reset on transfer -- a new owner
+  // re-vets who gets to auto-append rather than silently inheriting the
+  // previous owner's trust decisions (see the issue's ownership-transfer
+  // section).
+  let cursor;
+  do {
+    const page = await env.PASSPORTS.list({ prefix: grantKeyPrefix(id), cursor });
+    for (const k of page.keys) await env.PASSPORTS.delete(k.name);
+    cursor = page.cursor;
+  } while (cursor);
+
+  // The transfer itself is an event in the passport log, same
+  // OwnershipTransferred type ovpf.reduce() already understands -- so
+  // it's auditable in the export/timeline like everything else, not a
+  // side-channel mutation.
+  const ev = ovpf.envelope(`urn:ovpf:${id}`, "OwnershipTransferred",
+    { from: transfer.fromEmail, to: transfer.toEmail },
+    { type: "System", name: "ovp-provider-cloudflare", operator: identity.email });
+  const result = await landEvent(env, id, ev);
+  if (result.error) return json({ error: result.error }, 409);
+
+  return json({ transferred: true, from: transfer.fromEmail, to: transfer.toEmail, event: result.event });
 }
 
 async function readPassport(request, env, id) {
@@ -1014,6 +1286,22 @@ export default {
 
     let m = path.match(/^\/v1\/passports\/([^/]+)\/events$/);
     if (m && method === "POST") return appendEvent(request, env, m[1]);
+
+    m = path.match(/^\/v1\/passports\/([^/]+)\/pending\/([^/]+)$/);
+    if (m && method === "POST") return decidePending(request, env, m[1], m[2]);
+
+    m = path.match(/^\/v1\/passports\/([^/]+)\/pending$/);
+    if (m && method === "GET") return listPending(request, env, m[1]);
+
+    m = path.match(/^\/v1\/passports\/([^/]+)\/transfer\/accept$/);
+    if (m && method === "POST") return acceptTransfer(request, env, m[1]);
+
+    m = path.match(/^\/v1\/passports\/([^/]+)\/transfer\/cancel$/);
+    if (m && method === "POST") return cancelTransfer(request, env, m[1]);
+
+    m = path.match(/^\/v1\/passports\/([^/]+)\/transfer$/);
+    if (m && method === "POST") return initiateTransfer(request, env, m[1]);
+    if (m && method === "GET") return getTransfer(request, env, m[1]);
 
     m = path.match(/^\/v1\/passports\/([^/]+)\/export$/);
     if (m && method === "GET") return exportPassport(request, env, m[1]);
